@@ -1,15 +1,20 @@
-import os, sys, json, itertools, time, argparse, csv, h5py
+import os
+import sys
+import json
+import itertools
+import time
+import argparse
+import h5py
 import cv2
 import numpy as np
 import random as rn
-import argparse
 import pandas as pd
-from functools import partial
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import matplotlib.animation as animation
 from matplotlib import cm
+# import matplotlib.animation as animation
+from functools import partial
 from sklearn.manifold import TSNE
 from sklearn.model_selection import train_test_split
 from sklearn.decomposition import PCA
@@ -23,11 +28,9 @@ from torch.optim.lr_scheduler import _LRScheduler, StepLR
 from torch.utils.data import DataLoader
 import torchvision.models as models
 import tensorboardX as tbx
-import archs
-import numpy as np
-import random as rn
-import h5py
-from data_handling import numpy_pop, GetHDF5dataset, GetHDF5dataset_MultiLabel
+
+# import archs
+# from data_handling import numpy_pop, GetHDF5dataset, GetHDF5dataset_MultiLabel
 
 SEED = 1
 torch.manual_seed(SEED)
@@ -81,12 +84,12 @@ def true_negative(y_true, y_pred, thresh = 0.5):
 
 def negative_entropy_loss(input):
     small_value = 1e-4
-    input = F.softmax(input, dim=1) + small_value
-    w = torch.ones((input.size()[0], input.size()[1])) / input.size()[1]
+    softmax_input = F.softmax(input, dim=1) + small_value
+    w = torch.ones((softmax_input.size(0), softmax_input.size(1))) / softmax_input.size(1)
     w = w.to(device)
-    log_input = torch.log(input)
-    log_input = torch.mul(w, log_input)
-    neg_entropy = -1 * torch.sum(log_input, dim=1) / log_input.size()[1]
+    log_input = torch.log(softmax_input)
+    weight_log_input = torch.mul(w, log_input)
+    neg_entropy = -1 * torch.sum(weight_log_input, dim=1) / weight_log_input.size()[1]
     return torch.mean(neg_entropy)
 
 
@@ -137,6 +140,154 @@ def statistical_augmentation(features):
         new_h0 = h0 + torch.mul(e_h0, std_h0)
         outs.append(new_h0)
     return outs
+
+class TDAE(nn.Module):
+    def __init__(self, n_class=3, ksize=3):
+        super().__init__()
+        # self.model = models.vgg16(num_classes=n_class, pretrained=False)
+        # self.enc = models.resnet18(pretrained=False)
+        # self.enc = nn.Sequential(*list(self.enc.children())[:8])
+        self.conv1 = nn.Sequential(nn.Conv2d(3, 16, ksize, stride=2, padding=(ksize-1)//2),
+                                    nn.BatchNorm2d(16),
+                                    nn.ReLU())
+        self.conv2 = nn.Sequential(nn.Conv2d(16, 32, ksize, stride=2, padding=(ksize-1)//2),
+                                    nn.BatchNorm2d(32),
+                                    nn.ReLU())
+        self.conv3 = nn.Sequential(nn.Conv2d(32, 64, ksize, stride=2, padding=(ksize-1)//2),
+                                    nn.BatchNorm2d(64),
+                                    nn.ReLU())
+        self.conv4 = nn.Sequential(nn.Conv2d(64, 128, ksize, stride=2, padding=(ksize-1)//2),
+                                    nn.BatchNorm2d(128),
+                                    nn.ReLU())
+        self.conv5 = nn.Sequential(nn.Conv2d(128, 64, ksize, stride=2, padding=(ksize-1)//2),
+                                    nn.BatchNorm2d(64),
+                                    nn.ReLU())
+
+        self.enc = nn.Sequential(self.conv1, self.conv2, self.conv3, self.conv4, self.conv5)
+        self.subnet_conv_t1 = nn.Sequential(nn.Conv2d(64, 32, ksize, stride=2, padding=(ksize-1)//2),
+                                    nn.BatchNorm2d(64),
+                                    nn.ReLU())
+        self.subnet_t1 = nn.Sequential(nn.Linear(in_features=8*8*64, out_features=256),
+                                    nn.ReLU())
+        self.subnet_p1 = nn.Sequential(nn.Linear(in_features=8*8*64, out_features=256),
+                                    nn.ReLU())
+        self.subnet_t2 = nn.Sequential(nn.Linear(in_features=256, out_features=8*8*64),
+                                    nn.ReLU())
+        self.subnet_p2 = nn.Sequential(nn.Linear(in_features=256, out_features=8*8*64),
+                                    nn.ReLU())
+        self.classifier_t = nn.Linear(in_features=256, out_features=n_class)
+        # self.classifier_p = nn.Linear(in_features=64, out_features=n_class)
+
+        # self.deconv1 = nn.Sequential(nn.Linear(in_features=64*2, out_features=392),
+        #                             nn.ReLU())
+        # self.deconv2 = torch.nn.Upsample(scale_factor=2,mode='nearest')
+
+        self.dec_fc1 = nn.Sequential(nn.Linear(in_features=256*2, out_features=8*8*64),
+                                    nn.ReLU())
+        self.deconv1 = nn.Sequential(nn.ConvTranspose2d(64, 128, 2, stride=2),
+                                    nn.BatchNorm2d(128),
+                                    nn.ReLU())
+        self.deconv2 = nn.Sequential(nn.ConvTranspose2d(128, 64, 2, stride=2),
+                                    nn.BatchNorm2d(64),
+                                    nn.ReLU())
+        self.deconv3 = nn.Sequential(nn.ConvTranspose2d(64, 32, 2, stride=2),
+                                    nn.BatchNorm2d(32),
+                                    nn.ReLU())
+        self.deconv4 = nn.Sequential(nn.ConvTranspose2d(32, 16, 2, stride=2),
+                                    nn.BatchNorm2d(16),
+                                    nn.ReLU())
+        self.deconv5 = nn.Sequential(nn.ConvTranspose2d(16, 3, 2, stride=2),
+                                nn.Sigmoid())
+        self.dec = nn.Sequential(self.deconv1, self.deconv2, self.deconv3, self.deconv4, self.deconv5)
+
+        # self.classifier_t = nn.Linear(in_features=64, out_features=n_class)
+        # self.classifier_p = nn.Linear(in_features=64, out_features=n_class)
+        initialize_weights(self)
+        
+    def forward(self, input):
+        h0 = self.enc(input)
+        h0 = torch.reshape(h0, (h0.size(0), -1))
+        # h0 = F.avg_pool2d(h0, kernel_size=h0.size()[2])
+        # t0 = F.avg_pool2d(t0, kernel_size=t0.size()[2])
+        t0 = self.subnet_t1(h0)
+        p0 = self.subnet_p1(h0)
+        class_preds = self.classifier_t(t0)
+        class_preds_adv = self.classifier_t(p0)
+        # t1 = self.subnet_t2(t0)
+        # p1 = self.subnet_p2(p0)
+        concat_h0 = torch.cat((t0, p0), dim=1)
+        concat_h0 = self.dec_fc1(concat_h0)
+        # t1 = torch.reshape(t1, (t1.size(0), 64, 8, 8))
+        # p1 = torch.reshape(t1, (p1.size(0), 64, 8, 8))
+        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), 64, 8, 8))
+        # concat_enc = torch.cat((t1, p1), dim=1)
+        rec = self.dec(concat_h0)
+        return class_preds, class_preds_adv, rec
+
+        # p0 = F.avg_pool2d(p0, kernel_size=p0.size()[2])
+        # t0 = F.avg_pool2d(t0, kernel_size=t0.size()[2])
+        # p0 = p0.view(p0.size(0), 64)
+        # t0 = t0.view(t0.size(0), 64)
+        # self.p0 = self.fn_p(p0)
+        # self.t0 = self.fn_t(t0)
+        # self.augs = statistical_augmentation([self.p0, self.t0])
+
+        # pred_p = self.classifier_p(self.p0)
+        # pred_t = self.classifier_t(self.t0)
+
+        # re_enc = torch.cat([self.p0, self.t0], dim=1)
+        # aug_re_enc = torch.cat([self.augs[0], self.augs[1]], dim=1)
+
+        # dec = self.dec_fn(re_enc)
+        # dec = dec.view(-1, 8, 7, 7)
+        # dec = self.decoder(dec)
+
+        # aug_dec = self.dec_fn(aug_re_enc)
+        # aug_dec = aug_dec.view(-1, 8, 7, 7)
+        # aug_dec = self.decoder(aug_dec)
+        # return dec, pred_t, pred_p, aug_dec
+
+    def hidden_output(self, input):
+        h0 = self.enc(input)
+        h0 = torch.reshape(h0, (h0.size(0), -1))
+        # h0 = F.avg_pool2d(h0, kernel_size=h0.size()[2])
+        # t0 = F.avg_pool2d(t0, kernel_size=t0.size()[2])
+        t0 = self.subnet_t1(h0)
+        p0 = self.subnet_p1(h0)
+        return t0, p0
+        class_preds = self.classifier_t(t0)
+        class_preds_adv = self.classifier_t(p0)
+        # t1 = self.subnet_t2(t0)
+        # p1 = self.subnet_p2(p0)
+        concat_h0 = torch.cat((t0, p0), dim=1)
+        concat_h0 = self.dec_fc1(concat_h0)
+        # t1 = torch.reshape(t1, (t1.size(0), 64, 8, 8))
+        # p1 = torch.reshape(t1, (p1.size(0), 64, 8, 8))
+        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), 64, 8, 8))
+        # concat_enc = torch.cat((t1, p1), dim=1)
+        rec = self.dec(concat_h0)
+
+        h0 = self.enc(input)
+        h0 = torch.reshape(h0, (h0.size(0), -1))
+        # h0 = F.avg_pool2d(h0, kernel_size=h0.size()[2])
+        # t0 = F.avg_pool2d(t0, kernel_size=t0.size()[2])
+        t0 = self.subnet_t1(h0)
+        p0 = self.subnet_p1(h0)
+        
+        # h0 = self.enc(input)
+        # p0 = self.subnet_p(h0)
+        # t0 = self.subnet_t(h0)
+
+        # p0 = F.avg_pool2d(p0, kernel_size=p0.size()[2])
+        # t0 = F.avg_pool2d(t0, kernel_size=t0.size()[2])
+        # p0 = p0.view(p0.size(0), 64)
+        # t0 = t0.view(t0.size(0), 64)
+        # self.p0 = self.fn_p(p0)
+        # self.t0 = self.fn_t(t0)
+        # pred_p = self.classifier_p(self.p0)
+        # pred_t = self.classifier_t(self.t0)
+
+        return t0, p0
 
 
 class D2AE(nn.Module):
@@ -484,8 +635,147 @@ def main():
         #     writer.add_scalar('data/val_acc', np.mean(np.array(val_accs)), (epoch + 1))
         #     print('epoch [{}/{}], val loss:{:.6f}, val acc:{:.4f}'.format(epoch+1, n_epochs, np.asarray(val_losses).mean(), np.asarray(val_accs).mean()))
     writer.close()
-    torch.save(model.state_dict(), '{}/test_disentangle/model_param.json'.format(current_path))
+    torch.save(model.state_dict(), '{}/temp_disentangle/model_param.json'.format(current_path))
 
+def train_TDAE():
+    with h5py.File('data/toy_data.hdf5') as f:
+        srcs = []
+        targets1 = []
+        targets2 = []
+        for group_key in f.keys():
+            group = group_key
+            for parent_key in f[group].keys():
+                parent_group = '{}/{}'.format(group, parent_key)
+                src = []
+                target1 = []
+                target2 = []
+                for child_key in f[parent_group].keys():
+                    child_group = '{}/{}'.format(parent_group, child_key)
+                    src.append(f[child_group][()])
+                    target1.append(f[child_group].attrs['part'])
+                    target2.append(f[child_group].attrs['color'])
+                srcs.extend(src)
+                targets1.extend(target1)
+                targets2.extend(target2)
+    srcs = np.asarray(srcs)
+    srcs = srcs / srcs.max()
+    srcs = np.transpose(srcs, (0, 3, 1, 2))
+    targets1 = np.asarray(targets1)
+    targets2 = np.asarray(targets2)
+    srcs = torch.from_numpy(srcs).float()
+    model = TDAE()
+    model = model.to(device)
+    # srcs = srcs[:10]
+    # targets1 = targets1[:10]
+    data_pairs = torch.utils.data.TensorDataset(srcs,
+                                                torch.from_numpy(targets1).long())
+    ratio = 0.8
+    n_sample = len(data_pairs)
+    train_size = int(n_sample*ratio)
+    val_size = n_sample - train_size
+    
+    # train_set, val_set = torch.utils.data.random_split(data_pairs, [train_size, val_size])
+    # train_loader = DataLoader(train_set, batch_size=32, shuffle=True)
+    # val_loader = DataLoader(val_set, batch_size=32, shuffle=False)
+    train_size = int(n_sample * ratio)
+    val_size = n_sample - train_size
+    train_indices = list(range(0, train_size))
+    val_indices = list(range(train_size, n_sample))
+
+    train_set = torch.utils.data.dataset.Subset(data_pairs, train_indices)
+    val_set = torch.utils.data.dataset.Subset(data_pairs, val_indices)
+    train_loader = DataLoader(train_set, batch_size=32, shuffle=True)
+    val_loader = DataLoader(val_set, batch_size=32, shuffle=False)
+
+    # criterion_adv = nn.NLLLoss()
+    criterion_classifier = nn.CrossEntropyLoss()
+    criterion_reconst = nn.MSELoss()
+    # params_adv = list(model.subnet_p1.parameters()) + list(model.enc.parameters())
+    # params_adv = list(model.subnet_p1.parameters()) + list(model.classifier_t.parameters())
+    params_adv = list(model.subnet_p1.parameters()) + list(model.enc.parameters())
+    params = list(model.parameters())
+    # optim_adv = optim.Adam(params_adv, lr=1e-4)
+    optim_adv = optim.Adam(params_adv)
+    optimizer = optim.Adam(params)
+    # optim_adv = optim.SGD(params, lr=0.001)
+    # optimizer = optim.SGD(params, lr=0.01)
+    # scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
+    # scheduler_adv = StepLR(optim_adv, step_size=10, gamma=0.1)
+    
+    n_epochs = 1000
+    model.train()
+    # l_rec = 1.81e-5
+    l_rec = 1
+    l_adv = 1e-1
+    for epoch in range(n_epochs):
+        losses = []
+        accs_p = []
+        accs_t = []
+        Loss = []
+        CLoss = []
+        Acc = 0
+        Acc_adv = 0
+        for ite, (in_data, target) in enumerate(train_loader):
+            model.train()
+            optimizer.zero_grad()
+            optim_adv.zero_grad()
+            model.zero_grad()
+            preds, preds_adv, reconst = model(in_data.to(device))
+            # with torch.no_grad():
+            #     h0_t, h0_p = model.hidden_output_p(in_data.to(device))
+            # preds_adv = model.classifier_t(h0_p)
+
+            # grads = torch.autograd.grad(outputs=, inputs=, create_graph=True)
+            # rank_idx, rank_label = make_index_rankingloss(target.detach().to('cpu').numpy())
+
+            loss_classifier = criterion_classifier(preds.to(device), target.to(device))
+            # loss_h = l_adv * criterion_pred(pred_p.to(device), target.to(device))
+            # loss_classifier_adv = criterion_classifier(preds_adv.to(device), target.to(device))
+            loss_reconst = criterion_reconst(reconst.to(device), in_data.to(device))
+            loss_adv = negative_entropy_loss(preds_adv.to(device))
+            # loss_rec_aug = l_rec * criterion_rec(aug_rec.to(device), in_data.to(device))
+            # loss = loss_i + loss_h + loss_rec + loss_rec_aug
+            # loss = loss_classifier + loss_reconst
+            loss = loss_classifier + loss_reconst + 1000*loss_adv
+            # loss_classifier.backward()
+            # loss_reconst.backward()
+            loss.backward()
+            optimizer.step()
+            # model.classifier_p.zero_grad()
+            
+            # optimizer.zero_grad()
+            # print(loss_adv.item())
+            # preds, preds_adv, reconst = model(in_data.to(device))
+            # optim_adv.zero_grad()
+            # loss_adv.backward()
+            # optim_adv.step()
+            # loss_adv.backward(retain_graph=True)
+
+            Loss.append(loss.item())
+            CLoss.append(loss_classifier.item())
+            
+            y_true = target.to('cpu')
+            preds = preds.detach().to('cpu')
+            preds_adv = preds_adv.detach().to('cpu')
+            Acc += true_positive_multiclass(preds, y_true)
+            Acc_adv += true_positive_multiclass(preds_adv, y_true)
+
+        if (epoch + 1) % 100 == 0:
+            model.eval()
+            with torch.no_grad():
+                preds, preds_adv, reconst = model(in_data.to(device))
+                np_input = in_data[0].detach().to('cpu')
+                np_reconst = reconst[0].detach().to('cpu')
+                fig = plt.figure(figsize=(16*2, 9))
+                ax = fig.add_subplot(1, 2, 1)
+                ax.imshow(np.transpose(np_input, (1,2,0)))
+                ax = fig.add_subplot(1, 2, 2)
+                ax.imshow(np.transpose(np_reconst, (1,2,0)))
+                fig.savefig('results/{:04d}.png'.format(epoch+1))
+                plt.close(fig)
+        print('epoch: {} loss: {} classifier loss: {} Acc: {}, Acc_adv: {}'.format(epoch+1, np.mean(Loss), np.mean(CLoss), Acc/len(train_set), Acc_adv/len(train_set)))
 
 if __name__ == '__main__':
-    main()
+    train_TDAE()
+    pass
+    # main()
