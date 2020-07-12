@@ -19,7 +19,8 @@ flatten = tran_prob_part.flatten()
 flatten[::n_part+1] = reccrent_prob_part
 tran_prob_part = np.resize(flatten, (n_part, n_part))
 
-n_seq = 1000
+n_seq = 10
+min_len = 10
 out_dpath = './data/toy_data.hdf5'
 with h5py.File(out_dpath, 'w') as f:
     for seq_id in range(n_seq):
@@ -67,10 +68,9 @@ with h5py.File(out_dpath, 'w') as f:
             f['img/{:04d}/{:04d}'.format(seq_id, seq_len)].attrs['color'] = s1
             s0 = np.random.choice(n_part, size=1, p=tran_prob_part[s0])[0]
             s1 = np.random.choice(n_color, size=1, p=tran_prob_color[s1])[0]
-            # continue_prob[1] = 1/np.sqrt(2*np.pi*1)*np.exp(-(seq_len-20)**2/2)
-            if seq_len >= 20:
+            print(img.shape)
+            if seq_len >= min_len:
+                # continue_prob[0] = 1/np.sqrt(2*np.pi*1)*np.exp(-(seq_len-20)**2/2)
                 continue_prob[0] = continue_prob[0]*.9
                 continue_prob[1] = 1 - continue_prob[0]
                 seq_continue = np.random.choice([True, False], size=1, p=continue_prob)[0]
-                if seq_continue is False:
-                    print(seq_id)
