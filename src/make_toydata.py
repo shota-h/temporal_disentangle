@@ -19,7 +19,7 @@ flatten[::n_part+1] = reccrent_prob_part
 tran_prob_part = np.resize(flatten, (n_part, n_part))
 
 n_seq = 10000
-out_dpath = './img/'
+out_dpath = './data/toy_data.hdf5'
 for seq_id in range(n_seq):
     s0 = np.random.choice(n_part, size=1)[0]
     s1 = np.random.choice(n_color, size=1)[0]
