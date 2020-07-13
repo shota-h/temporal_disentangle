@@ -1,5 +1,5 @@
 docker run --rm -it \
---name temp \
+--name tempral_disentangle \
 -v $(pwd):/workdir -w /workdir \
-temp_disentangle \
+pytorch_env \
 /bin/bash

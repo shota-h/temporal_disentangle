@@ -776,6 +776,31 @@ def train_TDAE():
         print('epoch: {} loss: {} classifier loss: {} Acc: {}, Acc_adv: {}'.format(epoch+1, np.mean(Loss), np.mean(CLoss), Acc/len(train_set), Acc_adv/len(train_set)))
 
 if __name__ == '__main__':
+    with h5py.File('./data/colon.hdf5', 'r') as f:
+        key_list = list(f.keys())
+        m_count = []
+        p_count = []
+        for k in key_list:
+            mayo_label = f[k].attrs['mayo_label']
+            part_label = f[k].attrs['part_label']
+            nmayo_label = np.array([1 if cat <= 2 else 2 for cat in mayo_label])
+            print('M', mayo_label)
+            print('N', nmayo_label)
+            print('P', part_label)
+            print()
+            # sys.exit()
+            dm = mayo_label[1:] - mayo_label[:-1]
+            dp = part_label[1:] - part_label[:-1]
+            m_count.append(np.sum(dm != 0)/(len(mayo_label)-1))
+            p_count.append(np.sum(dp != 0)/(len(part_label)-1))
+    m_hist, m_bins = np.histogram(m_count, bins=np.arange(0, 1.1, .1))
+    p_hist, p_bins = np.histogram(p_count, bins=np.arange(0, 1.1, .1))
+    print(m_bins[1:])
+    print(m_hist)
+    print(p_hist)
+    print(np.cumsum(m_hist)/np.sum(m_hist))
+    print(np.cumsum(p_hist)/np.sum(p_hist))
+    sys.exit()
     train_TDAE()
     pass
     # main()
