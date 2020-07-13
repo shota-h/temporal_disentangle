@@ -24,8 +24,10 @@ tran_prob_color = np.resize(flatten, (n_color, n_color))
 flatten = tran_prob_subcolor.flatten()
 flatten[::n_subcolor+1] = reccrent_prob_subcolor
 tran_prob_subcolor = np.resize(flatten, (n_subcolor, n_subcolor))
+print(tran_prob_part)
+print(tran_prob_color)
 print(tran_prob_subcolor)
-
+sys.exit()
 n_seq = 10
 min_len = 10
 out_img = True
