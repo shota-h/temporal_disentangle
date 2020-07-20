@@ -681,7 +681,7 @@ def val_TDAE(data_path='data/toy_data.hdf5'):
                     child_group = '{}/{}'.format(parent_group, child_key)
                     src.append(f[child_group][()])
                     target1.append(f[child_group].attrs['part'])
-                    target2.append(f[child_group].attrs['color'])
+                    target2.append(f[child_group].attrs['mayo'])
                 srcs.extend(src)
                 targets1.extend(target1)
                 targets2.extend(target2)
@@ -692,7 +692,7 @@ def val_TDAE(data_path='data/toy_data.hdf5'):
     targets2 = np.asarray(targets2)
     srcs = torch.from_numpy(srcs).float()
     model = TDAE(n_class1=3, n_class2=5, d2ae_flag = d2ae_flag, img_h=img_h, img_w=img_w)
-    model.load_state_dict(torch.load('./reports/param/TDAE_test_param.json'))
+    model.load_state_dict(torch.load('./reports/param/TDAE_test_bestparam.json'))
     model = model.to(device)
     data_pairs = torch.utils.data.TensorDataset(srcs,
                                                 torch.from_numpy(targets1).long(),
