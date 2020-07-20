@@ -473,17 +473,12 @@ def train_TDAE(data_path='data/toy_data.hdf5'):
 
     with h5py.File(data_path, 'r') as f:
         srcs = []
-        targets1 = []
-        targets2 = []
+        targets1, targets2 = [], []
         for group_key in f.keys():
-            group = group_key
-            # print(group)
-            # return
-            for parent_key in f[group].keys():
-                parent_group = '{}/{}'.format(group, parent_key)
+            for parent_key in f[group_key].keys():
+                parent_group = '{}/{}'.format(group_key, parent_key)
                 src = []
-                target1 = []
-                target2 = []
+                target1, target2 = [], []
                 for child_key in f[parent_group].keys():
                     child_group = '{}/{}'.format(parent_group, child_key)
                     src.append(f[child_group][()])
@@ -492,6 +487,7 @@ def train_TDAE(data_path='data/toy_data.hdf5'):
                 srcs.extend(src)
                 targets1.extend(target1)
                 targets2.extend(target2)
+    
     srcs = np.asarray(srcs)
     srcs = srcs / srcs.max()
     srcs = np.transpose(srcs, (0, 3, 1, 2))
@@ -534,12 +530,10 @@ def train_TDAE(data_path='data/toy_data.hdf5'):
     # optim_adv = optim.SGD(params, lr=0.001)
     # optimizer = optim.SGD(params, lr=0.01)
     # scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
-    # scheduler_adv = StepLR(optim_adv, step_size=10, gamma=0.1)
     
     n_epochs = 300
     model.train()
     best_loss = np.inf
-    # l_rec = 1.81e-5
     l_adv = 1.0e-0
     l_recon = 1.0e-0 * 2
     for epoch in range(n_epochs):
