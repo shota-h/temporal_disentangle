@@ -28,9 +28,9 @@ from torch.utils.data import DataLoader
 import torchvision.models as models
 from torchvision.utils import make_grid
 import tensorboardX as tbx
-# from torch.utils.tensorboard import SummaryWriter
 
-
+from losses import TripletLoss, negative_entropy_loss
+from metrics import true_positive_multiclass, true_positive, true_negative
 from __init__ import clean_directory 
 
 SEED = 1
@@ -43,69 +43,6 @@ current_path = './'
 
 def load_model(in_dpath, model):
     return model.load_state_dict(torch.load(in_dpath))
-
-
-def normalize_y_pred(y_pred, thresh=0.5):
-    y_pred = [1 if yp >= thresh else 0 for yp in y_pred]
-    return np.array(y_pred)
-
-
-def onehot2label(y_pred):
-    y_pred = np.argmax(y_pred, axis=1)
-    return y_pred
-
-
-def true_positive_multiclass(y_pred, y_true):
-    y_pred = normalize_classification_y_pred(y_pred)
-    tp = [1 if torch.equal(yp, yt) else 0 for yp, yt in zip(y_pred, y_true)]
-    return np.sum(tp)
-
-
-def normalize_classification_y_pred(y_pred):
-    y_pred = [torch.argmax(yp) for yp in y_pred]
-    return y_pred
-
-
-def true_positive(y_true, y_pred, thresh=0.5):
-    y_pred = normalize_y_pred(y_pred, thresh)
-    cat_y_pred = y_pred[y_true == 1]
-    cat_y_true = y_true[y_true == 1]
-    tp = [1 for i in range(len(cat_y_true)) if cat_y_pred[i] == 1]
-    return np.sum(tp)
-
-
-def true_negative(y_true, y_pred, thresh = 0.5):
-    y_pred = normalize_y_pred(y_pred, thresh)
-    cat_y_pred = y_pred[y_true == 0]
-    cat_y_true = y_true[y_true == 0]
-    tn = [1 for i in range(len(cat_y_true)) if cat_y_pred[i] == 0]
-    return np.sum(tn)
-    
-
-def negative_entropy_loss(input):
-    small_value = 1e-4
-    softmax_input = F.softmax(input, dim=1) + small_value
-    w = torch.ones((softmax_input.size(0), softmax_input.size(1))) / softmax_input.size(1)
-    w = w.to(device)
-    log_input = torch.log(softmax_input)
-    weight_log_input = torch.mul(w, log_input)
-    neg_entropy = -1 * torch.sum(weight_log_input, dim=1) / weight_log_input.size()[1]
-    return torch.mean(neg_entropy)
-
-
-def make_index_rankingloss(target):
-    idx = []
-    labels = []
-    for i, j in itertools.permutations(range(target), 2):
-        idx.append([i, j])
-        if target[i] > target[j]:
-            labels.append(1)
-        elif target[i] < target[j]:
-            labels.append(-1)
-        else:
-            labels.append(0)
-
-    return np.asarray(idx), np.asarray(labels)
 
 
 def initialize_weights(model):
@@ -140,6 +77,7 @@ def statistical_augmentation(features):
         new_h0 = h0 + torch.mul(e_h0, std_h0)
         outs.append(new_h0)
     return outs
+
 
 class TDAE(nn.Module):
     def __init__(self, n_class1=3, n_class2=2, ksize=3, d2ae_flag=False, img_w=256, img_h=256):
@@ -245,7 +183,6 @@ class TDAE(nn.Module):
 
     def forward(self, input):
         h0 = self.enc(input)
-        # h0 = torch.reshape(h0, (h0.size(0), -1))
         t0 = self.subnet_conv_t1(h0)
         p0 = self.subnet_conv_p1(h0)
         t0 = self.subnet_conv_t2(t0)
@@ -273,29 +210,6 @@ class TDAE(nn.Module):
         rec = self.dec(concat_h0)
         # return class_main_preds, class_preds_adv, rec
         return class_main_preds, class_sub_preds, class_main_preds_adv, class_sub_preds_adv, rec
-
-        # p0 = F.avg_pool2d(p0, kernel_size=p0.size()[2])
-        # t0 = F.avg_pool2d(t0, kernel_size=t0.size()[2])
-        # p0 = p0.view(p0.size(0), 64)
-        # t0 = t0.view(t0.size(0), 64)
-        # self.p0 = self.fn_p(p0)
-        # self.t0 = self.fn_t(t0)
-        # self.augs = statistical_augmentation([self.p0, self.t0])
-
-        # pred_p = self.classifier_p(self.p0)
-        # pred_t = self.classifier_t(self.t0)
-
-        # re_enc = torch.cat([self.p0, self.t0], dim=1)
-        # aug_re_enc = torch.cat([self.augs[0], self.augs[1]], dim=1)
-
-        # dec = self.dec_fn(re_enc)
-        # dec = dec.view(-1, 8, 7, 7)
-        # dec = self.decoder(dec)
-
-        # aug_dec = self.dec_fn(aug_re_enc)
-        # aug_dec = aug_dec.view(-1, 8, 7, 7)
-        # aug_dec = self.decoder(aug_dec)
-        # return dec, pred_t, pred_p, aug_dec
 
     def hidden_output(self, input):
         h0 = self.enc(input)
@@ -346,161 +260,6 @@ class TDAE(nn.Module):
         concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), 64, self.img_h//(2**5), self.img_w//(2**5)))
         rec = self.dec(concat_h0)
         return rec
-
-
-class D2AE(nn.Module):
-    def __init__(self, n_class, ksize=3):
-        super().__init__()
-        # self.model = models.vgg16(num_classes=n_class, pretrained=False)
-        self.enc = models.resnet18(pretrained=False)
-        self.enc = nn.Sequential(*list(self.enc.children())[:8])
-        
-        self.conv_p_1 = nn.Conv2d(512, 256, ksize, padding=(ksize-1)//2)
-        self.conv_p_2 = nn.Conv2d(256, 128, ksize, padding=(ksize-1)//2)
-        self.conv_p_3 = nn.Conv2d(128, 64, ksize, padding=(ksize-1)//2)
-        self.subnet_p = nn.Sequential(self.conv_p_1,
-                                    nn.BatchNorm2d(256),
-                                    nn.ReLU(),
-                                    self.conv_p_2,
-                                    nn.BatchNorm2d(128),
-                                    nn.ReLU(),
-                                    self.conv_p_3,
-                                    nn.BatchNorm2d(64),
-                                    nn.ReLU())
-
-        self.fn_p = nn.Sequential(nn.Linear(in_features=64, out_features=64),
-                                nn.ReLU())
-        self.conv_t_1 = nn.Conv2d(512, 256, ksize, padding=(ksize-1)//2)
-        self.conv_t_2 = nn.Conv2d(256, 128, ksize, padding=(ksize-1)//2)
-        self.conv_t_3 = nn.Conv2d(128, 64, ksize, padding=(ksize-1)//2)
-        self.subnet_t = nn.Sequential(self.conv_t_1,
-                                    nn.BatchNorm2d(256),
-                                    nn.ReLU(),
-                                    self.conv_t_2,
-                                    nn.BatchNorm2d(128),
-                                    nn.ReLU(),
-                                    self.conv_t_3,
-                                    nn.BatchNorm2d(64),
-                                    nn.ReLU())
-        self.fn_t = nn.Sequential(nn.Linear(in_features=64, out_features=64),
-                                nn.ReLU())
-
-        self.dec_fn = nn.Sequential(nn.Linear(in_features=64*2, out_features=392),
-                                    nn.ReLU())
-        self.dec_upsampling = torch.nn.Upsample(scale_factor=2,mode='nearest')
-        # self.dec_deconv1 = nn.ConvTranspose2d(8, 128, 2, stride=2)
-        # self.dec_deconv2 = nn.ConvTranspose2d(128, 64, 2, stride=2)
-        # self.dec_deconv3 = nn.ConvTranspose2d(64, 32, 2, stride=2)
-        # self.dec_deconv4 = nn.ConvTranspose2d(32, 16, 2, stride=2)
-        # self.dec_deconv5 = nn.ConvTranspose2d(16, 3, 2, stride=2)
-        # self.dec_deconv1 = nn.ConvTranspose2d(2, 8, 2, stride=2)
-        # self.dec_deconv2 = nn.ConvTranspose2d(8, 16, 2, stride=2)
-        # self.dec_deconv3 = nn.ConvTranspose2d(16, 32, 2, stride=2)
-        # self.dec_deconv4 = nn.ConvTranspose2d(32, 3, 2, stride=2)
-
-        # self.dec_conv1 = nn.Conv2d(2, 8, ksize, padding=(ksize-1)//2)
-        # self.dec_conv2 = nn.Conv2d(8, 16, ksize, padding=(ksize-1)//2)
-        # self.dec_conv3 = nn.Conv2d(16, 32, ksize, padding=(ksize-1)//2)
-        # self.dec_conv4 = nn.Conv2d(32, 3, ksize, padding=(ksize-1)//2)
-
-        self.dec_conv1 = nn.Conv2d(8, 128, ksize, padding=(ksize-1)//2)
-        self.dec_conv1_1 = nn.Conv2d(128, 128, ksize, padding=(ksize-1)//2)
-        self.dec_conv1_2 = nn.Conv2d(128, 128, ksize, padding=(ksize-1)//2)
-        self.dec_conv2 = nn.Conv2d(128, 64, ksize, padding=(ksize-1)//2)
-        self.dec_conv2_1 = nn.Conv2d(64, 64, ksize, padding=(ksize-1)//2)
-        self.dec_conv2_2 = nn.Conv2d(64, 64, ksize, padding=(ksize-1)//2)
-        self.dec_conv3 = nn.Conv2d(64, 32, ksize, padding=(ksize-1)//2)
-        self.dec_conv3_1 = nn.Conv2d(32, 32, ksize, padding=(ksize-1)//2)
-        self.dec_conv3_2 = nn.Conv2d(32, 32, ksize, padding=(ksize-1)//2)
-        self.dec_conv4 = nn.Conv2d(32, 16, ksize, padding=(ksize-1)//2)
-        self.dec_conv4_1 = nn.Conv2d(16, 16, ksize, padding=(ksize-1)//2)
-        self.dec_conv4_2 = nn.Conv2d(16, 16, ksize, padding=(ksize-1)//2)
-        self.dec_conv5 = nn.Conv2d(16, 3, ksize, padding=(ksize-1)//2)
-        self.dec_conv5_1 = nn.Conv2d(3, 3, ksize, padding=(ksize-1)//2)
-        self.dec_conv5_2 = nn.Conv2d(3, 3, ksize, padding=(ksize-1)//2)
-
-        # self.decoder = nn.Sequential(self.dec_deconv1,
-        #                             nn.BatchNorm2d(128),
-        #                             nn.ReLU(),
-        #                             self.dec_deconv2,
-        #                             nn.BatchNorm2d(64),
-        #                             nn.ReLU(),
-        #                             self.dec_deconv3,
-        #                             nn.BatchNorm2d(32),
-        #                             nn.ReLU(),
-        #                             self.dec_deconv4,
-        #                             nn.BatchNorm2d(16),
-        #                             nn.ReLU(),
-        #                             self.dec_deconv5,
-        #                             nn.Sigmoid())
-        self.decoder = nn.Sequential(self.dec_upsampling,
-                                    self.dec_conv1, nn.BatchNorm2d(128), nn.ReLU(),
-                                    self.dec_conv1_1, nn.BatchNorm2d(128), nn.ReLU(),
-                                    self.dec_conv1_2, nn.BatchNorm2d(128), nn.ReLU(),
-                                    self.dec_upsampling,
-                                    self.dec_conv2, nn.BatchNorm2d(64), nn.ReLU(),
-                                    self.dec_conv2_1, nn.BatchNorm2d(64), nn.ReLU(),
-                                    self.dec_conv2_2, nn.BatchNorm2d(64), nn.ReLU(),
-                                    self.dec_upsampling,
-                                    self.dec_conv3, nn.BatchNorm2d(32), nn.ReLU(),
-                                    self.dec_conv3_1, nn.BatchNorm2d(32), nn.ReLU(),
-                                    self.dec_conv3_2, nn.BatchNorm2d(32), nn.ReLU(),
-                                    self.dec_upsampling,
-                                    self.dec_conv4, nn.BatchNorm2d(16), nn.ReLU(),
-                                    self.dec_conv4_1, nn.BatchNorm2d(16), nn.ReLU(),
-                                    self.dec_conv4_2, nn.BatchNorm2d(16), nn.ReLU(),
-                                    self.dec_upsampling,
-                                    # self.dec_conv5, nn.Sigmoid(),
-                                    # self.dec_conv5_1, nn.Sigmoid(),
-                                    self.dec_conv5, nn.Sigmoid())
-
-        self.classifier_t = nn.Linear(in_features=64, out_features=n_class)
-        self.classifier_p = nn.Linear(in_features=64, out_features=n_class)
-        initialize_weights(self)
-        
-    def forward(self, input):
-        h0 = self.enc(input)
-        p0 = self.subnet_p(h0)
-        t0 = self.subnet_t(h0)
-
-        p0 = F.avg_pool2d(p0, kernel_size=p0.size()[2])
-        t0 = F.avg_pool2d(t0, kernel_size=t0.size()[2])
-        p0 = p0.view(p0.size(0), 64)
-        t0 = t0.view(t0.size(0), 64)
-        self.p0 = self.fn_p(p0)
-        self.t0 = self.fn_t(t0)
-        self.augs = statistical_augmentation([self.p0, self.t0])
-
-        pred_p = self.classifier_p(self.p0)
-        pred_t = self.classifier_t(self.t0)
-
-        re_enc = torch.cat([self.p0, self.t0], dim=1)
-        aug_re_enc = torch.cat([self.augs[0], self.augs[1]], dim=1)
-
-        dec = self.dec_fn(re_enc)
-        dec = dec.view(-1, 8, 7, 7)
-        dec = self.decoder(dec)
-
-        aug_dec = self.dec_fn(aug_re_enc)
-        aug_dec = aug_dec.view(-1, 8, 7, 7)
-        aug_dec = self.decoder(aug_dec)
-        return dec, pred_t, pred_p, aug_dec
-
-    def hidden_output_p(self, input):
-        h0 = self.enc(input)
-        p0 = self.subnet_p(h0)
-        t0 = self.subnet_t(h0)
-
-        p0 = F.avg_pool2d(p0, kernel_size=p0.size()[2])
-        t0 = F.avg_pool2d(t0, kernel_size=t0.size()[2])
-        p0 = p0.view(p0.size(0), 64)
-        t0 = t0.view(t0.size(0), 64)
-        self.p0 = self.fn_p(p0)
-        self.t0 = self.fn_t(t0)
-        pred_p = self.classifier_p(self.p0)
-        pred_t = self.classifier_t(self.t0)
-
-        return pred_p
 
 
 def main():
@@ -1015,8 +774,8 @@ def data_review():
                     f_out['img/{}/{}'.format(k, fname)].attrs['mayo'] = m-1
     
 if __name__ == '__main__':
-    if os.path.exists('./data/colon_renew.hdf5') is False:
-        data_review()
+    # if os.path.exists('./data/colon_renew.hdf5') is False:
+    #     data_review()
     d = './data/colon_renew.hdf5'
     train_TDAE()
     val_TDAE()
