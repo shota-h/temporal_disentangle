@@ -24,7 +24,7 @@ from torch import nn, optim
 from torch.nn import functional as F
 from torch.autograd import Variable
 from torch.optim.lr_scheduler import _LRScheduler, StepLR
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 import torchvision.models as models
 from torchvision.utils import make_grid
 import tensorboardX as tbx
@@ -32,6 +32,8 @@ import tensorboardX as tbx
 from losses import TripletLoss, negative_entropy_loss
 from metrics import true_positive_multiclass, true_positive, true_negative
 from __init__ import clean_directory 
+from data_handling import get_triplet_flatted_data, get_flatted_data
+from archs import TDAE_out
 
 SEED = 1
 torch.manual_seed(SEED)
@@ -43,6 +45,28 @@ current_path = './'
 
 def load_model(in_dpath, model):
     return model.load_state_dict(torch.load(in_dpath))
+
+
+class PairwiseSampler(Dataset):
+    def __init__(self, X, u):
+        self.X = X
+        self.u = u
+
+    def __len__(self):
+        return len(self.u)
+
+    def __getitem__(self, idx_i):
+        x_i = self.X[idx_i]
+        u_i = self.u[idx_i]
+
+        indices = list(range(len(self.u)))
+        indices.remove(idx_i)
+        idx_j = np.random.choice(indices)
+
+        x_j = self.X[idx_j]
+        u_j = self.u[idx_j]
+
+        return x_i, x_j, u_i, u_j
 
 
 def initialize_weights(model):
@@ -454,65 +478,38 @@ def main():
     writer.close()
     torch.save(model.state_dict(), '{}/temp_disentangle/model_param.json'.format(current_path))
 
+
 def train_TDAE(data_path='data/toy_data.hdf5'):
+    out_source_dpath = './reports' 
     if 'toy_data' in data_path:
         img_w = 256
         img_h = 256
     else:
         img_w = 224
         img_h = 224
-    out_fig_dpath = './reports/figure'
-    out_param_dpath = './reports/param'
-    out_board_dpath = './reports/runs'
+
+    out_fig_dpath = '{}/figure'.format(out_source_dpath)
+    out_param_dpath = '{}/param'.format(out_source_dpath)
+    out_board_dpath = '{}/runs'.format(out_source_dpath)
     clean_directory(out_fig_dpath)
     clean_directory(out_param_dpath)
     clean_directory(out_board_dpath)
-    # clean_directory(out_board_dpath)
     d2ae_flag = False
     writer = tbx.SummaryWriter(out_board_dpath)
 
-    with h5py.File(data_path, 'r') as f:
-        srcs = []
-        targets1, targets2 = [], []
-        for group_key in f.keys():
-            for parent_key in f[group_key].keys():
-                parent_group = '{}/{}'.format(group_key, parent_key)
-                src = []
-                target1, target2 = [], []
-                for child_key in f[parent_group].keys():
-                    child_group = '{}/{}'.format(parent_group, child_key)
-                    src.append(f[child_group][()])
-                    target1.append(f[child_group].attrs['part'])
-                    target2.append(f[child_group].attrs['mayo'])
-                srcs.extend(src)
-                targets1.extend(target1)
-                targets2.extend(target2)
-    
-    srcs = np.asarray(srcs)
-    srcs = srcs / srcs.max()
-    srcs = np.transpose(srcs, (0, 3, 1, 2))
-    targets1 = np.asarray(targets1)
-    targets2 = np.asarray(targets2)
-    srcs = torch.from_numpy(srcs).float()
-    model = TDAE(n_class1=3, n_class2=5, d2ae_flag = d2ae_flag, img_h=img_h, img_w=img_w)
+    srcs, targets1, targets2 = get_triplet_flatted_data(data_path)
+    data_pairs = torch.utils.data.TensorDataset(srcs[0], srcs[1], srcs[2], targets1, targets2)
+    model = TDAE_out(n_class1=3, n_class2=5, d2ae_flag = d2ae_flag, img_h=img_h, img_w=img_w)
     model = model.to(device)
-    # srcs = srcs[:10]
-    # targets1 = targets1[:10]
-    data_pairs = torch.utils.data.TensorDataset(srcs,
-                                                torch.from_numpy(targets1).long(),
-                                                torch.from_numpy(targets2).long())
-    ratio = 0.6
+    ratio = [0.7, 0.2, 0.1]
     n_sample = len(data_pairs)
-    train_size = int(n_sample*ratio)
-    val_size = n_sample - train_size
-    
+    train_size = int(n_sample*ratio[0])
+    val_size = int(n_sample*ratio[1])
+    test_size = n_sample - train_size - val_size
+
     # train_set, val_set = torch.utils.data.random_split(data_pairs, [train_size, val_size])
-    # train_loader = DataLoader(train_set, batch_size=32, shuffle=True)
-    # val_loader = DataLoader(val_set, batch_size=32, shuffle=False)
-    train_size = int(n_sample * ratio)
-    val_size = n_sample - train_size
     train_indices = list(range(0, train_size))
-    val_indices = list(range(train_size, n_sample))
+    val_indices = list(range(train_size, train_size+val_size))
 
     train_set = torch.utils.data.dataset.Subset(data_pairs, train_indices)
     val_set = torch.utils.data.dataset.Subset(data_pairs, val_indices)
@@ -522,30 +519,31 @@ def train_TDAE(data_path='data/toy_data.hdf5'):
     # criterion_adv = nn.NLLLoss()
     criterion_classifier = nn.CrossEntropyLoss()
     criterion_reconst = nn.MSELoss()
+    criterion_triplet = TripletLoss()
     params = list(model.parameters())
     # optim_adv = optim.Adam(params_adv, lr=1e-4)
     params_adv = list(model.classifier_sub.parameters())
     optim_adv = optim.Adam(params_adv)
     optimizer = optim.Adam(params)
     # optim_adv = optim.SGD(params, lr=0.001)
-    # optimizer = optim.SGD(params, lr=0.01)
     # scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
     
     n_epochs = 300
-    model.train()
     best_loss = np.inf
     l_adv = 1.0e-0
-    l_recon = 1.0e-0 * 2
+    l_recon = 1.0e-0*2
+    l_tri = 0
+    # l_tri = 1.0e-1
     for epoch in range(n_epochs):
-        losses = []
-        accs_p = []
-        accs_t = []
-        Loss, RecLoss, CLoss, CLoss_sub = [], [], [], []
+        accs_p, acc_t = [], []
         Acc, Acc_adv, sub_Acc, sub_Acc_adv  = 0, 0, 0, 0
-        for ite, (in_data, target, sub_target) in enumerate(train_loader):
+        Loss, RecLoss, CLoss, CLoss_sub, TriLoss = [], [], [], [], []
+        for ite, (in_data, p_in_data, n_in_data, target, sub_target) in enumerate(train_loader):
+        # for ite, (in_data, target, sub_target) in enumerate(train_loader):
             model.train()
             model.zero_grad()
             optimizer.zero_grad()
+            losses = []
             if d2ae_flag:
                 optim_adv.zero_grad()
                 preds, sub_preds_adv, sub_preds, reconst = model.forward_train_like_D2AE(in_data.to(device))
@@ -565,40 +563,48 @@ def train_TDAE(data_path='data/toy_data.hdf5'):
                 optim_adv.step()
                 loss = loss_classifier_main + loss_classifier_sub + loss_sub_adv + loss_reconst
             else:
+                with torch.no_grad():
+                    h0_anchor, h0_pos, h0_neg = model.enc(in_data.to(device)), model.enc(p_in_data.to(device)), model.enc(n_in_data.to(device))
+                    h0_anchor, h0_pos, h0_neg = Variable(h0_anchor), Variable(h0_pos), Variable(h0_neg)
+                p0_anchor, p0_pos, p0_neg = model.subnets_p(h0_anchor.to(device)), model.subnets_p(h0_pos.to(device)), model.subnets_p(h0_neg.to(device))
+                loss_triplet = l_tri * criterion_triplet(p0_anchor, p0_pos, p0_neg)
+                loss_triplet.backward(retain_graph=True)
+                losses.append(loss_triplet)
+
                 preds, sub_preds, preds_adv, sub_preds_adv, reconst = model(in_data.to(device))
                 loss_reconst = l_recon*criterion_reconst(reconst.to(device), in_data.to(device))
                 loss_reconst.backward(retain_graph=True)
+                losses.append(loss_reconst)
+                
                 loss_adv = l_adv*negative_entropy_loss(sub_preds.to(device))
                 loss_adv.backward(retain_graph=True)
+                losses.append(loss_adv)
+                
                 model.classifier_main.zero_grad()
                 loss_classifier_main = criterion_classifier(preds.to(device), target.to(device))
                 loss_classifier_main.backward(retain_graph=True)
-                # loss_classifier_sub = criterion_classifier(sub_preds.to(device), sub_target.to(device))
-                # loss_adv = negative_entropy_loss(preds_adv.to(device))
-                # loss_sub_adv = negative_entropy_loss(sub_preds_adv.to(device))
-                # loss = loss_classifier_main + loss_classifier_sub + 0*loss_adv + 0*loss_sub_adv + loss_reconst
-                # loss = loss_classifier_main + loss_classifier_sub + 0*loss_adv + 0*loss_sub_adv + loss_reconst
-                loss = loss_classifier_main + loss_adv + loss_reconst
-                # loss.backward()
+                losses.append(loss_classifier_main)
+
+                loss = 0
+                for cat_loss in losses:
+                    loss += cat_loss
                 optimizer.step()
 
             Loss.append(loss.item())
             RecLoss.append(loss_reconst.item())
             CLoss.append(loss_classifier_main.item())
             CLoss_sub.append(loss_adv.item())
+            TriLoss.append(loss_triplet.item())
             
             y_true = target.to('cpu')
             sub_y_true = sub_target.to('cpu')
             preds = preds.detach().to('cpu')
             sub_preds = sub_preds.detach().to('cpu')
-            # preds_adv = preds_adv.detach().to('cpu')
-            # sub_preds_adv = sub_preds_adv.detach().to('cpu')
             Acc += true_positive_multiclass(preds, y_true)
             sub_Acc += true_positive_multiclass(sub_preds, y_true)
-            # Acc_adv += true_positive_multiclass(preds_adv, y_true)
-            # sub_Acc_adv += true_positive_multiclass(sub_preds_adv, sub_y_true)
 
         print('epoch: {} loss: {} \nAcc: {} sub Acc: {}, Acc_adv: {}, sub Acc_adv: {}'.format(epoch+1, np.mean(Loss), Acc/len(train_set), sub_Acc/len(train_set), Acc_adv/len(train_set), sub_Acc_adv/len(train_set)))
+        print(np.mean(TriLoss))
         writer.add_scalar('summarize loss',
             np.mean(Loss), epoch)
         writer.add_scalar('rec loss',
@@ -607,28 +613,21 @@ def train_TDAE(data_path='data/toy_data.hdf5'):
             np.mean(CLoss), epoch)
         writer.add_scalar('Adv loss',
             np.mean(CLoss_sub), epoch)
+        writer.add_scalar('Triplet loss',
+            np.mean(TriLoss), epoch)
         
         if (epoch + 1) % 10 == 0:
             model.eval()
             with torch.no_grad():
-                for in_data, target1, target2 in train_loader:
+                for in_data, p_in_data, n_in_data, target1, target2 in train_loader:
                     reconst = model.reconst(in_data.to(device))
                     np_input = in_data[0].detach().to('cpu')
                     np_reconst = reconst[0].detach().to('cpu')
-                    # fig = plt.figure(figsize=(16*2, 9))
-                    # ax = fig.add_subplot(1, 2, 1)
-                    # ax.set_title('{}:{}'.format(target1[0].detach().to('cpu'), target2[0].detach().to('cpu')))
-                    # ax.imshow(np.transpose(np_input, (1,2,0)))
-                    # ax = fig.add_subplot(1, 2, 2)
-                    # ax.set_title('{}:{}'.format(target1[0].detach().to('cpu'), target2[0].detach().to('cpu')))
-                    # ax.imshow(np.transpose(np_reconst, (1,2,0)))
-                    # fig.savefig('{}/{:04d}.png'.format(out_fig_dpath, epoch+1))
-                    # plt.close(fig)
                     img_grid = make_grid(torch.stack([np_input, np_reconst]))
-                    writer.add_image('test'.format(epoch+1), img_grid)
+                    writer.add_image('test', img_grid, epoch+1)
                     break
                 val_losses = []
-                for in_data, target, sub_target in val_loader:
+                for in_data, p_in_data, n_in_data, target, _ in val_loader:
                     if d2ae_flag:
                         preds, sub_preds_adv, sub_preds, reconst = model.forward_train_like_D2AE(in_data.to(device))
                         loss_reconst = l_recon * criterion_reconst(reconst.to(device), in_data.to(device))
@@ -637,18 +636,21 @@ def train_TDAE(data_path='data/toy_data.hdf5'):
                         loss_sub_adv = l_adv * negative_entropy_loss(sub_preds_adv.to(device).to(device))
                         val_loss = loss_reconst + loss_classifier_main + loss_sub_adv + loss_classifier_sub
                     else:
+                        h0_anchor, h0_pos, h0_neg = model.enc(in_data.to(device)), model.enc(p_in_data.to(device)), model.enc(n_in_data.to(device))
+                        h0_anchor, h0_pos, h0_neg = Variable(h0_anchor), Variable(h0_pos), Variable(h0_neg)
+                        p0_anchor, p0_pos, p0_neg = model.subnets_p(h0_anchor.to(device)), model.subnets_p(h0_pos.to(device)), model.subnets_p(h0_neg.to(device))
+                        loss_triplet = l_tri * criterion_triplet(p0_anchor, p0_pos, p0_neg)
                         preds, sub_preds, preds_adv, sub_preds_adv, reconst = model(in_data.to(device))
-                        val_loss_reconst = criterion_reconst(reconst.to(device), in_data.to(device))
+                        val_loss_reconst = l_recon * criterion_reconst(reconst.to(device), in_data.to(device))
                         val_loss_classifier_main = criterion_classifier(preds.to(device), target.to(device))
-                        val_loss_adv = negative_entropy_loss(sub_preds.to(device))
-                        # val_loss_classifier_sub = criterion_classifier(sub_preds.to(device), sub_target.to(device))
-                        # val_loss_adv = negative_entropy_loss(preds_adv.to(device))
-                        # val_loss_sub_adv = negative_entropy_loss(sub_preds_adv.to(device))
-                        val_loss = val_loss_classifier_main + val_loss_adv + val_loss_reconst
-                        # val_loss = val_loss_classifier_main + val_loss_classifier_sub + 0*val_loss_adv + 0*val_loss_sub_adv + val_loss_reconst
-
+                        val_loss_adv = l_adv * negative_entropy_loss(sub_preds.to(device))
+                        val_loss = val_loss_classifier_main + val_loss_reconst + loss_triplet
+                        
                     val_losses.append(val_loss.item())
                 print('epoch: {} val loss: {}'.format(epoch+1, np.mean(val_losses)))
+                writer.add_scalar('val loss',
+                    np.mean(val_losses), epoch)
+
                 if best_loss > np.mean(val_losses):
                     best_loss = np.mean(val_losses)
                     torch.save(model.state_dict(), '{}/TDAE_test_bestparam.json'.format(out_param_dpath))
@@ -665,50 +667,26 @@ def val_TDAE(data_path='data/toy_data.hdf5'):
         img_w = 224
         img_h = 224
 
+    out_source_dpath = './reports' 
+    out_val_dpath = '{}/val'.format(out_source_dpath)
+    clean_directory(out_val_dpath)
+
     d2ae_flag = False
-    with h5py.File(data_path, 'r') as f:
-        srcs = []
-        targets1 = []
-        targets2 = []
-        for group_key in f.keys():
-            group = group_key
-            for parent_key in f[group].keys():
-                parent_group = '{}/{}'.format(group, parent_key)
-                src = []
-                target1 = []
-                target2 = []
-                for child_key in f[parent_group].keys():
-                    child_group = '{}/{}'.format(parent_group, child_key)
-                    src.append(f[child_group][()])
-                    target1.append(f[child_group].attrs['part'])
-                    target2.append(f[child_group].attrs['mayo'])
-                srcs.extend(src)
-                targets1.extend(target1)
-                targets2.extend(target2)
-    srcs = np.asarray(srcs)
-    srcs = srcs / srcs.max()
-    srcs = np.transpose(srcs, (0, 3, 1, 2))
-    targets1 = np.asarray(targets1)
-    targets2 = np.asarray(targets2)
-    srcs = torch.from_numpy(srcs).float()
-    model = TDAE(n_class1=3, n_class2=5, d2ae_flag = d2ae_flag, img_h=img_h, img_w=img_w)
+    model = TDAE_out(n_class1=3, n_class2=5, d2ae_flag = d2ae_flag, img_h=img_h, img_w=img_w)
     model.load_state_dict(torch.load('./reports/param/TDAE_test_bestparam.json'))
     model = model.to(device)
-    data_pairs = torch.utils.data.TensorDataset(srcs,
-                                                torch.from_numpy(targets1).long(),
-                                                torch.from_numpy(targets2).long())
-    ratio = 0.6
+    srcs, targets1, targets2 = get_triplet_flatted_data(data_path)
+
+    data_pairs = torch.utils.data.TensorDataset(srcs[0], targets1, targets2)
+    ratio = [0.7, 0.2, 0.1]
     n_sample = len(data_pairs)
-    train_size = int(n_sample*ratio)
-    val_size = n_sample - train_size
+    train_size = int(n_sample*ratio[0])
+    val_size = int(n_sample*ratio[1])
+    test_size = n_sample - train_size - val_size
     
     # train_set, val_set = torch.utils.data.random_split(data_pairs, [train_size, val_size])
-    # train_loader = DataLoader(train_set, batch_size=32, shuffle=True)
-    # val_loader = DataLoader(val_set, batch_size=32, shuffle=False)
-    train_size = int(n_sample * ratio)
-    val_size = n_sample - train_size
     train_indices = list(range(0, train_size))
-    val_indices = list(range(train_size, n_sample))
+    val_indices = list(range(train_size, train_size+val_size))
 
     # _ = torch.utils.data.dataset.Subset(data_pairs, train_indices)
     val_set = torch.utils.data.dataset.Subset(data_pairs, val_indices)
@@ -746,33 +724,19 @@ def val_TDAE(data_path='data/toy_data.hdf5'):
             ax = fig.add_subplot(2, 3, 6)
             ax.set_title('2')
             ax.imshow(np.transpose(s_np_reconst1, (1,2,0)))
-            fig.savefig('reports/sample{:04d}.png'.format(n_iter))
+            fig.savefig('{}/sample{:04d}.png'.format(out_val_dpath, n_iter))
             plt.close(fig)
-            if n_iter > 10:
+            if n_iter >= 10:
                 break
 
-def data_review():
-    with h5py.File('./data/colon.hdf5', 'r') as f:
-        with h5py.File('./data/colon_renew.hdf5', 'w') as f_out:
-            key = list(f.keys())
-            df = pd.read_csv('./data/colon_data2label.csv')
-            # flag = False
-            for k in key:
-                cat_df = df[df.sequence_num == int(k)]
-                for i, fname in enumerate(cat_df.filename):
-                    # print(f[k].attrs['mayo_label'][i])
-                    p = f[k].attrs['part_label'][i]
-                    m = f[k].attrs['mayo_label'][i]
-                    f_out.create_dataset(name='img/{}/{}'.format(k, fname), data=f[k][i])
-                    f_out['img/{}/{}'.format(k, fname)].attrs['part'] = p-1
-                    f_out['img/{}/{}'.format(k, fname)].attrs['mayo'] = m-1
     
 if __name__ == '__main__':
     # if os.path.exists('./data/colon_renew.hdf5') is False:
     #     data_review()
     d = './data/colon_renew.hdf5'
-    train_TDAE()
-    val_TDAE()
+    d = './data/toy_data_fix_center.hdf5'
+    train_TDAE(d)
+    val_TDAE(d)
     sys.exit()
     with h5py.File('./data/colon.hdf5', 'r') as f:
         key_list = list(f.keys())

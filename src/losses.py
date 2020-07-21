@@ -11,7 +11,7 @@ class TripletLoss(nn.Module):
     Takes embeddings of an anchor sample, a positive sample and a negative sample
     """
 
-    def __init__(self, margin):
+    def __init__(self, margin=0):
         super(TripletLoss, self).__init__()
         self.margin = margin
 
@@ -20,6 +20,7 @@ class TripletLoss(nn.Module):
         distance_negative = (anchor - negative).pow(2).sum(1)  # .pow(.5)
         losses = F.relu(distance_positive - distance_negative + self.margin)
         return losses.mean() if size_average else losses.sum()
+
 
 def negative_entropy_loss(input, small_value=1e-4):
     softmax_input = F.softmax(input, dim=1) + small_value
