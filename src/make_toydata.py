@@ -28,7 +28,7 @@ tran_prob_subcolor = np.resize(flatten, (n_subcolor, n_subcolor))
 n_seq = 100
 min_len = 20
 out_img = False
-out_dpath = './data/toy_data_fix_center.hdf5'
+out_dpath = './data/toy_data.hdf5'
 with h5py.File(out_dpath, 'w') as f:
     for seq_id in range(n_seq):
         s0 = np.random.choice(n_part, size=1)[0]
@@ -46,7 +46,7 @@ with h5py.File(out_dpath, 'w') as f:
             part = part_list[s0]
             color = color_list[s1][s2]
             cx, cy = np.random.randint(64, 256-64, size=2) 
-            cx, cy = 128, 128
+            # cx, cy = 128, 128
             dx, dy = np.random.randint(32, 64, size=2)
             dx = dy
             # angle = np.random.randint(360, size=1)[0]
@@ -74,11 +74,12 @@ with h5py.File(out_dpath, 'w') as f:
                 pts = np.array(((cx+rx1, cy+ry1), (cx+rx2, cy+ry2), (cx+rx3, cy+ry3))).astype(np.int)
                 cv2.fillConvexPoly(img, pts, color)
             if out_img:
-               cv2.imwrite('./data/test{:03d}_{:03d}.png'.format(seq_id, seq_len), img)
+               cv2.imwrite('./data/figs/test{:03d}_{:03d}.png'.format(seq_id, seq_len), img[:,:,::-1])
             else:
                 f.create_dataset(name='img/{:04d}/{:04d}'.format(seq_id, seq_len), data=img)
                 f['img/{:04d}/{:04d}'.format(seq_id, seq_len)].attrs['part'] = s0
                 f['img/{:04d}/{:04d}'.format(seq_id, seq_len)].attrs['mayo'] = s1
+
             s0 = np.random.choice(n_part, size=1, p=tran_prob_part[s0])[0]
             s1 = np.random.choice(n_color, size=1, p=tran_prob_color[s1])[0]
             s2 = 0

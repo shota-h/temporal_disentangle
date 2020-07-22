@@ -18,6 +18,8 @@ from sklearn.manifold import TSNE
 from sklearn.model_selection import train_test_split
 from sklearn.decomposition import PCA
 from sklearn.metrics import confusion_matrix
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import LinearSVC
 import torch
 from torch.nn.modules import activation
 from torch import nn, optim
@@ -481,7 +483,7 @@ def main():
 
 def train_TDAE(data_path='data/toy_data.hdf5'):
     out_source_dpath = './reports' 
-    if 'toy_data' in data_path:
+    if 'toy' in data_path:
         img_w = 256
         img_h = 256
     else:
@@ -524,16 +526,17 @@ def train_TDAE(data_path='data/toy_data.hdf5'):
     # optim_adv = optim.Adam(params_adv, lr=1e-4)
     params_adv = list(model.classifier_sub.parameters())
     optim_adv = optim.Adam(params_adv)
-    optimizer = optim.Adam(params)
-    # optim_adv = optim.SGD(params, lr=0.001)
+    # optimizer = optim.Adam(params)
+    optimizer = optim.SGD(params, lr=0.001)
     # scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
-    
+    Scores_reg = [[], []]
+    Scores_svm = [[], []]
     n_epochs = 300
     best_loss = np.inf
-    l_adv = 1.0e-0
-    l_recon = 1.0e-0*2
-    l_tri = 0
-    # l_tri = 1.0e-1
+    l_adv = 1.0e-1 * 0
+    l_recon = 1.0e-0
+    l_tri = 1.0e-2 * 0
+    l_c = 1.0e-0 * 0
     for epoch in range(n_epochs):
         accs_p, acc_t = [], []
         Acc, Acc_adv, sub_Acc, sub_Acc_adv  = 0, 0, 0, 0
@@ -563,32 +566,33 @@ def train_TDAE(data_path='data/toy_data.hdf5'):
                 optim_adv.step()
                 loss = loss_classifier_main + loss_classifier_sub + loss_sub_adv + loss_reconst
             else:
-                with torch.no_grad():
-                    h0_anchor, h0_pos, h0_neg = model.enc(in_data.to(device)), model.enc(p_in_data.to(device)), model.enc(n_in_data.to(device))
-                    h0_anchor, h0_pos, h0_neg = Variable(h0_anchor), Variable(h0_pos), Variable(h0_neg)
-                p0_anchor, p0_pos, p0_neg = model.subnets_p(h0_anchor.to(device)), model.subnets_p(h0_pos.to(device)), model.subnets_p(h0_neg.to(device))
+                # with torch.no_grad():
+                #     h0_anchor, h0_pos, h0_neg = model.enc(in_data.to(device)), model.enc(p_in_data.to(device)), model.enc(n_in_data.to(device))
+                #     h0_anchor, h0_pos, h0_neg = Variable(h0_anchor), Variable(h0_pos), Variable(h0_neg)
+                # p0_anchor, p0_pos, p0_neg = model.subnets_p(h0_anchor.to(device)), model.subnets_p(h0_pos.to(device)), model.subnets_p(h0_neg.to(device))
+                (_, p0_anchor), (_, p0_pos), (_, p0_neg) = model.hidden_output(in_data.to(device)), model.hidden_output(p_in_data.to(device)), model.hidden_output(n_in_data.to(device))
                 loss_triplet = l_tri * criterion_triplet(p0_anchor, p0_pos, p0_neg)
-                loss_triplet.backward(retain_graph=True)
+                # loss_triplet.backward(retain_graph=True)
                 losses.append(loss_triplet)
 
                 preds, sub_preds, preds_adv, sub_preds_adv, reconst = model(in_data.to(device))
-                loss_reconst = l_recon*criterion_reconst(reconst.to(device), in_data.to(device))
+                loss_reconst = l_recon * criterion_reconst(reconst.to(device), in_data.to(device))
                 loss_reconst.backward(retain_graph=True)
                 losses.append(loss_reconst)
                 
-                loss_adv = l_adv*negative_entropy_loss(sub_preds.to(device))
-                loss_adv.backward(retain_graph=True)
+                loss_adv = l_adv * negative_entropy_loss(sub_preds.to(device))
+                # loss_adv.backward(retain_graph=True)
+                model.classifier_main.zero_grad()
                 losses.append(loss_adv)
                 
-                model.classifier_main.zero_grad()
-                loss_classifier_main = criterion_classifier(preds.to(device), target.to(device))
-                loss_classifier_main.backward(retain_graph=True)
+                loss_classifier_main = l_c * criterion_classifier(preds.to(device), target.to(device))
+                # loss_classifier_main.backward(retain_graph=True)
                 losses.append(loss_classifier_main)
 
+                optimizer.step()
                 loss = 0
                 for cat_loss in losses:
                     loss += cat_loss
-                optimizer.step()
 
             Loss.append(loss.item())
             RecLoss.append(loss_reconst.item())
@@ -619,13 +623,42 @@ def train_TDAE(data_path='data/toy_data.hdf5'):
         if (epoch + 1) % 10 == 0:
             model.eval()
             with torch.no_grad():
-                for in_data, p_in_data, n_in_data, target1, target2 in train_loader:
-                    reconst = model.reconst(in_data.to(device))
-                    np_input = in_data[0].detach().to('cpu')
-                    np_reconst = reconst[0].detach().to('cpu')
-                    img_grid = make_grid(torch.stack([np_input, np_reconst]))
-                    writer.add_image('test', img_grid, epoch+1)
-                    break
+                X_train = []
+                Y_train1 = []
+                Y_train2 = []
+                for v_i, (in_data, p_in_data, n_in_data, target1, target2) in enumerate(train_loader):
+                    if v_i == 0:
+                        reconst = model.reconst(in_data.to(device))
+                        np_input = in_data[0].detach().to('cpu')
+                        np_reconst = reconst[0].detach().to('cpu')
+                        img_grid = make_grid(torch.stack([np_input, np_reconst]))
+                        writer.add_image('test', img_grid, epoch+1)
+                    (_, t0) = model.hidden_output(in_data.to(device))
+                    t0 = t0.detach().to('cpu').numpy()
+                    X_train.extend(t0)
+                    Y_train1.extend(target1.detach().to('cpu').numpy())
+                    Y_train2.extend(target2.detach().to('cpu').numpy())
+                
+                X_train = np.asarray(X_train)
+                Y_train1 = np.asarray(Y_train1)
+                Y_train2 = np.asarray(Y_train2)
+                logreg = LogisticRegression(penalty='l2', solver="sag")
+                linear_svc = LinearSVC()
+                for it, Y_train in enumerate([Y_train1, Y_train2]):
+                    logreg.fit(X_train, Y_train)
+                    linear_svc.fit(X_train, Y_train)
+                    score_reg = logreg.score(X_train, Y_train)
+                    score_svm = linear_svc.score(X_train, Y_train)
+                    Scores_reg[it].append(score_reg)
+                    Scores_svm[it].append(score_svm)
+                    print("Target {} Linear Reg score = {:3f}, SVM score = {:.3f}".format(it, score_reg, score_svm))
+
+                    # 予測　
+                    # Y_pred = logreg.predict(X_train)
+                    # Y_pred = linear_svc.predict(X_train)
+
+                    # スコア
+
                 val_losses = []
                 for in_data, p_in_data, n_in_data, target, _ in val_loader:
                     if d2ae_flag:
@@ -650,6 +683,14 @@ def train_TDAE(data_path='data/toy_data.hdf5'):
                 print('epoch: {} val loss: {}'.format(epoch+1, np.mean(val_losses)))
                 writer.add_scalar('val loss',
                     np.mean(val_losses), epoch)
+                writer.add_scalar('Tar1 Reg Score',
+                    np.mean(Scores_reg[0][-1]), epoch)
+                writer.add_scalar('Tar2 Reg Score',
+                    np.mean(Scores_reg[1][-1]), epoch)
+                writer.add_scalar('Tar1 SVM Score',
+                    np.mean(Scores_svm[0][-1]), epoch)
+                writer.add_scalar('Tar2 SVM Score',
+                    np.mean(Scores_svm[1][-1]), epoch)
 
                 if best_loss > np.mean(val_losses):
                     best_loss = np.mean(val_losses)
@@ -726,7 +767,7 @@ def val_TDAE(data_path='data/toy_data.hdf5'):
             ax.imshow(np.transpose(s_np_reconst1, (1,2,0)))
             fig.savefig('{}/sample{:04d}.png'.format(out_val_dpath, n_iter))
             plt.close(fig)
-            if n_iter >= 10:
+            if n_iter >= 50:
                 break
 
     

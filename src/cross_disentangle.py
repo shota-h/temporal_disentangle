@@ -82,13 +82,14 @@ def statistical_augmentation(features):
 
 def argparses():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--n_epochs', type=int, default=300)
+    parser.add_argument('--epoch', type=int, default=300)
     parser.add_argument('--data', type=str, default='toy')
     parser.add_argument('--test', action='store_true')
     return parser.parse_args()
 
 
 def main(data_path='data/toy_data.hdf5'):
+    arg = argparses()
     out_source_dpath = './reports/Cross' 
     if 'toy_data' in data_path:
         img_w = 256
@@ -128,16 +129,16 @@ def main(data_path='data/toy_data.hdf5'):
 
     criterion_classifier = nn.CrossEntropyLoss()
     criterion_reconst = nn.MSELoss()
-    criterion_triplet = TripletLoss()
     params = list(model.parameters())
     optimizer = optim.Adam(params)
     # optim_adv = optim.SGD(params, lr=0.001)
     # scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
     
-    n_epochs = 300
+    n_epochs = arg.epoch
     best_loss = np.inf
-    l_adv = 1.0e-1
+    l_adv = 1.0e-1 * 0
     l_recon = 1.0e-0
+    l_c = 1.0e-0 * 0
     for epoch in range(n_epochs):
         accs_p, acc_t = [], []
         Acc, Acc_adv, sub_Acc, sub_Acc_adv  = 0, 0, 0, 0
@@ -162,11 +163,11 @@ def main(data_path='data/toy_data.hdf5'):
             model.classifier_sub.zero_grad()
             losses.append(loss_sub_adv)
             
-            loss_classifier_main = criterion_classifier(preds_main.to(device), target.to(device))
+            loss_classifier_main = l_c * criterion_classifier(preds_main.to(device), target.to(device))
             loss_classifier_main.backward(retain_graph=True)
             losses.append(loss_classifier_main)
 
-            loss_classifier_sub = criterion_classifier(preds_sub.to(device), sub_target.to(device))
+            loss_classifier_sub = l_c * criterion_classifier(preds_sub.to(device), sub_target.to(device))
             loss_classifier_sub.backward(retain_graph=True)
             losses.append(loss_classifier_sub)
             loss = 0
@@ -218,8 +219,8 @@ def main(data_path='data/toy_data.hdf5'):
                     loss_reconst = l_recon*criterion_reconst(reconst.to(device), in_data.to(device))
                     # loss_main_adv = l_adv*negative_entropy_loss(adv_preds_main.to(device))
                     # loss_sub_adv = l_adv*negative_entropy_loss(adv_preds_sub.to(device))
-                    loss_classifier_main = criterion_classifier(preds_main.to(device), target.to(device))
-                    loss_classifier_sub = criterion_classifier(preds_sub.to(device), sub_target.to(device))
+                    loss_classifier_main = l_c * criterion_classifier(preds_main.to(device), target.to(device))
+                    loss_classifier_sub = l_c * criterion_classifier(preds_sub.to(device), sub_target.to(device))
                     val_loss = loss_reconst + loss_classifier_main + loss_classifier_sub
                     val_losses.append(val_loss.item())
 

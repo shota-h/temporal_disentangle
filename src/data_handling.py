@@ -89,18 +89,18 @@ def get_triplet_flatted_data(data_dpath):
                         elif target2[-1] <= 1:
                             target2[-1] = 0
         
-        src = np.asarray(src)
-        if src.max() > 1:
-            src = src / 255
-            # srcs = srcs / srcs.max()
-        src = np.transpose(src, (0, 3, 1, 2))
-        p_src = np.transpose(p_src, (0, 3, 1, 2))
-        n_src = np.transpose(n_src, (0, 3, 1, 2))
-        target1 = np.asarray(target1)
-        target2 = np.asarray(target2)
-        src = torch.from_numpy(src).float()
-        p_src = torch.from_numpy(p_src).float()
-        n_src = torch.from_numpy(n_src).float()
-        target1 = torch.from_numpy(target1).long()
-        target2 = torch.from_numpy(target2).long()
-        return (src, p_src, n_src), target1, target2
+    src = np.asarray(src)
+    if src.max() > 1:
+        src = src / 255
+        # srcs = srcs / srcs.max()
+    src = np.transpose(src, (0, 3, 1, 2))
+    p_src = np.transpose(p_src, (0, 3, 1, 2))
+    n_src = np.transpose(n_src, (0, 3, 1, 2))
+    target1 = np.asarray(target1)
+    target2 = np.asarray(target2)
+    src = torch.from_numpy(src).float()
+    p_src = torch.from_numpy(p_src).float()
+    n_src = torch.from_numpy(n_src).float()
+    target1 = torch.from_numpy(target1).long()
+    target2 = torch.from_numpy(target2).long()
+    return (src, p_src, n_src), target1, target2

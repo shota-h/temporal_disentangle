@@ -37,7 +37,8 @@ class Flatten(nn.Module):
         super(Flatten, self).__init__()
     
     def forward(self, x):
-        return x.view(x.size(0), -1)
+        return torch.reshape(x, (x.size(0), -1))
+        # return x.view(x.size(0), -1)
 
         # t0 = torch.reshape(t0, (t0.size(0), -1))
 
@@ -229,14 +230,14 @@ class TDAE_out(nn.Module):
         self.subnet_conv_t2 = nn.Sequential(nn.Conv2d(128, 64, ksize, padding=(ksize-1)//2),
                                     nn.BatchNorm2d(64),
                                     nn.ReLU())
+        self.subnet_t1 = nn.Sequential(nn.Linear(in_features=64, out_features=256),
+                                    nn.ReLU())
+
         self.subnet_conv_p1 = nn.Sequential(nn.Conv2d(128, 128, ksize, padding=(ksize-1)//2),
                                     nn.BatchNorm2d(128),
                                     nn.ReLU())
         self.subnet_conv_p2 = nn.Sequential(nn.Conv2d(128, 64, ksize, padding=(ksize-1)//2),
                                     nn.BatchNorm2d(64),
-                                    nn.ReLU())
-
-        self.subnet_t1 = nn.Sequential(nn.Linear(in_features=64, out_features=256),
                                     nn.ReLU())
         self.subnet_p1 = nn.Sequential(nn.Linear(in_features=64, out_features=256),
                                     nn.ReLU())
@@ -260,6 +261,7 @@ class TDAE_out(nn.Module):
         self.dec_fc1 = nn.Sequential(nn.Linear(in_features=256*2, 
                                                 out_features=(self.img_w//(2**5))*(self.img_h//(2**5))*64),
                                                 nn.ReLU())
+
         self.deconv1 = nn.Sequential(nn.ConvTranspose2d(64, 128, 2, stride=2),
                                     nn.BatchNorm2d(128),
                                     nn.ReLU())
@@ -333,6 +335,7 @@ class TDAE_out(nn.Module):
         # p0 = torch.reshape(p0, (p0.size(0), -1))
         # t0 = self.subnet_t1(t0)
         # p0 = self.subnet_p1(p0)
+
         t0 = self.subnets_t(h0)
         p0 = self.subnets_p(h0)
         class_main_preds = self.classifier_main(t0)
@@ -349,14 +352,19 @@ class TDAE_out(nn.Module):
         h0 = self.enc(input)
         # t0 = self.subnet_conv_t1(h0)
         # p0 = self.subnet_conv_p1(h0)
+
         # t0 = self.subnet_conv_t2(t0)
         # p0 = self.subnet_conv_p2(p0)
+        
         # t0 = F.avg_pool2d(t0, kernel_size=t0.size()[2])
         # p0 = F.avg_pool2d(p0, kernel_size=p0.size()[2])
+        
         # t0 = torch.reshape(t0, (t0.size(0), -1))
         # p0 = torch.reshape(p0, (p0.size(0), -1))
+        
         # t0 = self.subnet_t1(t0)
         # p0 = self.subnet_p1(p0)
+
         t0 = self.subnets_t(h0)
         p0 = self.subnets_p(h0)
         return t0, p0
@@ -365,14 +373,19 @@ class TDAE_out(nn.Module):
         h0 = self.enc(input)
         # t0 = self.subnet_conv_t1(h0)
         # p0 = self.subnet_conv_p1(h0)
+
         # t0 = self.subnet_conv_t2(t0)
         # p0 = self.subnet_conv_p2(p0)
+        
         # t0 = F.avg_pool2d(t0, kernel_size=t0.size()[2])
         # p0 = F.avg_pool2d(p0, kernel_size=p0.size()[2])
+        
         # t0 = torch.reshape(t0, (t0.size(0), -1))
         # p0 = torch.reshape(p0, (p0.size(0), -1))
+        
         # t0 = self.subnet_t1(t0)
         # p0 = self.subnet_p1(p0)
+
         t0 = self.subnets_t(h0)
         p0 = self.subnets_p(h0)
         concat_h0 = torch.cat((t0, p0), dim=1)
@@ -393,6 +406,7 @@ class TDAE_out(nn.Module):
         # p0 = torch.reshape(p0, (p0.size(0), -1))
         # t0 = self.subnet_t1(t0)
         # p0 = self.subnet_p1(p0)
+
         t0 = self.subnets_t(h0)
         p0 = self.subnets_p(h0)
         concat_h0 = torch.cat((t0[idx1], p0[idx2]), dim=1)
