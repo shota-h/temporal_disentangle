@@ -1,5 +1,6 @@
 import os
 import sys
+import copy
 import json
 import itertools
 import time
@@ -44,6 +45,22 @@ np.random.seed(SEED)
 os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 current_path = './'
+
+
+def argparses():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--epoch', type=int, default=300)
+    parser.add_argument('--batch', type=int, default=64)
+    parser.add_argument('--data', type=str, default='toy')
+    parser.add_argument('--mode', type=str, default='all')
+    parser.add_argument('--ex', type=str, default=None)
+    parser.add_argument('--classifier', type=float, default=1e-0)
+    parser.add_argument('--rec', type=float, default=1e-0)
+    parser.add_argument('--adv', type=float, default=1e-1)
+    parser.add_argument('--tri', type=float, default=1e-2)
+    parser.add_argument('--triplet', action='store_true')
+    return parser.parse_args()
+
 
 def load_model(in_dpath, model):
     return model.load_state_dict(torch.load(in_dpath))
@@ -103,189 +120,6 @@ def statistical_augmentation(features):
         new_h0 = h0 + torch.mul(e_h0, std_h0)
         outs.append(new_h0)
     return outs
-
-
-class TDAE(nn.Module):
-    def __init__(self, n_class1=3, n_class2=2, ksize=3, d2ae_flag=False, img_w=256, img_h=256):
-        super().__init__()
-        if d2ae_flag:
-            n_class2 = n_class1
-        self.img_h, self.img_w = img_h, img_w
-        # self.model = models.vgg16(num_classes=n_class, pretrained=False)
-        # self.enc = models.resnet18(pretrained=False)
-        # self.enc = nn.Sequential(*list(self.enc.children())[:8])
-        self.conv1 = nn.Sequential(nn.Conv2d(3, 16, ksize, stride=2, padding=(ksize-1)//2),
-                                    nn.BatchNorm2d(16),
-                                    nn.ReLU())
-        self.conv2 = nn.Sequential(nn.Conv2d(16, 32, ksize, stride=2, padding=(ksize-1)//2),
-                                    nn.BatchNorm2d(32),
-                                    nn.ReLU())
-        self.conv3 = nn.Sequential(nn.Conv2d(32, 64, ksize, stride=2, padding=(ksize-1)//2),
-                                    nn.BatchNorm2d(64),
-                                    nn.ReLU())
-        self.conv4 = nn.Sequential(nn.Conv2d(64, 128, ksize, stride=2, padding=(ksize-1)//2),
-                                    nn.BatchNorm2d(128),
-                                    nn.ReLU())
-        self.conv5 = nn.Sequential(nn.Conv2d(128, 128, ksize, stride=2, padding=(ksize-1)//2),
-                                    nn.BatchNorm2d(128),
-                                    nn.ReLU())
-
-        self.enc = nn.Sequential(self.conv1, self.conv2, self.conv3, self.conv4, self.conv5)
-        self.subnet_conv_t1 = nn.Sequential(nn.Conv2d(128, 128, ksize, padding=(ksize-1)//2),
-                                    nn.BatchNorm2d(128),
-                                    nn.ReLU())
-        self.subnet_conv_t2 = nn.Sequential(nn.Conv2d(128, 64, ksize, padding=(ksize-1)//2),
-                                    nn.BatchNorm2d(64),
-                                    nn.ReLU())
-        self.subnet_conv_p1 = nn.Sequential(nn.Conv2d(128, 128, ksize, padding=(ksize-1)//2),
-                                    nn.BatchNorm2d(128),
-                                    nn.ReLU())
-        self.subnet_conv_p2 = nn.Sequential(nn.Conv2d(128, 64, ksize, padding=(ksize-1)//2),
-                                    nn.BatchNorm2d(64),
-                                    nn.ReLU())
-
-        self.subnet_t1 = nn.Sequential(nn.Linear(in_features=64, out_features=256),
-                                    nn.ReLU())
-        self.subnet_p1 = nn.Sequential(nn.Linear(in_features=64, out_features=256),
-                                    nn.ReLU())
-                
-        # self.subnet_t2 = nn.Sequential(nn.Linear(in_features=256, out_features=8*8*64),
-        #                             nn.ReLU())
-        # self.subnet_p2 = nn.Sequential(nn.Linear(in_features=256, out_features=8*8*64),
-        #                             nn.ReLU())
-        self.classifier_main = nn.Linear(in_features=256, out_features=n_class1)
-        self.classifier_sub = nn.Linear(in_features=256, out_features=n_class2)
-
-        # self.deconv1 = nn.Sequential(nn.Linear(in_features=64*2, out_features=392),
-        #                             nn.ReLU())
-        # self.deconv2 = torch.nn.Upsample(scale_factor=2,mode='nearest')
-
-        self.dec_fc1 = nn.Sequential(nn.Linear(in_features=256*2, out_features=(self.img_w//(2**5))*(self.img_h//(2**5))*64),
-                                    nn.ReLU())
-        # self.deconv1 = nn.Sequential(nn.ConvTranspose2d(64, 64, 2, stride=2),
-        #                             nn.BatchNorm2d(64),
-        #                             nn.ReLU())
-        self.deconv1 = nn.Sequential(nn.ConvTranspose2d(64, 128, 2, stride=2),
-                                    nn.BatchNorm2d(128),
-                                    nn.ReLU())
-        self.deconv2 = nn.Sequential(nn.ConvTranspose2d(128, 64, 2, stride=2),
-                                    nn.BatchNorm2d(64),
-                                    nn.ReLU())
-        self.deconv3 = nn.Sequential(nn.ConvTranspose2d(64, 32, 2, stride=2),
-                                    nn.BatchNorm2d(32),
-                                    nn.ReLU())
-        self.deconv4 = nn.Sequential(nn.ConvTranspose2d(32, 16, 2, stride=2),
-                                    nn.BatchNorm2d(16),
-                                    nn.ReLU())
-        self.deconv5 = nn.Sequential(nn.ConvTranspose2d(16, 3, 2, stride=2),
-                                nn.Sigmoid())
-        self.dec = nn.Sequential(self.deconv1, self.deconv2, self.deconv3, self.deconv4, self.deconv5)
-
-        # self.classifier_t = nn.Linear(in_features=64, out_features=n_class)
-        # self.classifier_p = nn.Linear(in_features=64, out_features=n_class)
-        initialize_weights(self)
-        
-    def forward_train_like_D2AE(self, input):
-        h0 = self.enc(input)
-        t0 = self.subnet_conv_t1(h0)
-        p0 = self.subnet_conv_p1(h0)
-        t0 = self.subnet_conv_t2(t0)
-        p0 = self.subnet_conv_p2(p0)
-        t0 = F.avg_pool2d(t0, kernel_size=t0.size()[2])
-        p0 = F.avg_pool2d(p0, kernel_size=p0.size()[2])
-        t0 = torch.reshape(t0, (t0.size(0), -1))
-        p0 = torch.reshape(p0, (p0.size(0), -1))
-        t0 = self.subnet_t1(t0)
-        p0 = self.subnet_p1(p0)
-        p0_no_grad = p0.clone().detach()
-        class_main_preds = self.classifier_main(t0)
-        class_sub_preds = self.classifier_sub(p0)
-        class_sub_preds_adv = self.classifier_sub(p0_no_grad)
-        concat_h0 = torch.cat((t0, p0), dim=1)
-        concat_h0 = self.dec_fc1(concat_h0)
-        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), 64, self.img_w//(2**5), self.img_w//(2**5)))
-        rec = self.dec(concat_h0)
-        return class_main_preds, class_sub_preds, class_sub_preds_adv, rec
-
-    def forward(self, input):
-        h0 = self.enc(input)
-        t0 = self.subnet_conv_t1(h0)
-        p0 = self.subnet_conv_p1(h0)
-        t0 = self.subnet_conv_t2(t0)
-        p0 = self.subnet_conv_p2(p0)
-        t0 = F.avg_pool2d(t0, kernel_size=t0.size()[2])
-        p0 = F.avg_pool2d(p0, kernel_size=p0.size()[2])
-        t0 = torch.reshape(t0, (t0.size(0), -1))
-        p0 = torch.reshape(p0, (p0.size(0), -1))
-        t0 = self.subnet_t1(t0)
-        p0 = self.subnet_p1(p0)
-        class_main_preds = self.classifier_main(t0)
-        class_sub_preds = self.classifier_main(p0)
-        class_main_preds_adv = self.classifier_main(p0)
-        class_sub_preds_adv = self.classifier_main(t0)
-        # class_preds_adv = self.classifier_t(p0)
-        # t1 = self.subnet_t2(t0)
-
-        # p1 = self.subnet_p2(p0)
-        concat_h0 = torch.cat((t0, p0), dim=1)
-        concat_h0 = self.dec_fc1(concat_h0)
-        # t1 = torch.reshape(t1, (t1.size(0), 64, 8, 8))
-        # p1 = torch.reshape(t1, (p1.size(0), 64, 8, 8))
-        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), 64, self.img_h//(2**5), self.img_w//(2**5)))
-        # concat_enc = torch.cat((t1, p1), dim=1)
-        rec = self.dec(concat_h0)
-        # return class_main_preds, class_preds_adv, rec
-        return class_main_preds, class_sub_preds, class_main_preds_adv, class_sub_preds_adv, rec
-
-    def hidden_output(self, input):
-        h0 = self.enc(input)
-        t0 = self.subnet_conv_t1(h0)
-        p0 = self.subnet_conv_p1(h0)
-        t0 = self.subnet_conv_t2(t0)
-        p0 = self.subnet_conv_p2(p0)
-        t0 = F.avg_pool2d(t0, kernel_size=t0.size()[2])
-        p0 = F.avg_pool2d(p0, kernel_size=p0.size()[2])
-        t0 = torch.reshape(t0, (t0.size(0), -1))
-        p0 = torch.reshape(p0, (p0.size(0), -1))
-        t0 = self.subnet_t1(t0)
-        p0 = self.subnet_p1(p0)
-        return t0, p0
-
-    def reconst(self, input):
-        h0 = self.enc(input)
-        t0 = self.subnet_conv_t1(h0)
-        p0 = self.subnet_conv_p1(h0)
-        t0 = self.subnet_conv_t2(t0)
-        p0 = self.subnet_conv_p2(p0)
-        t0 = F.avg_pool2d(t0, kernel_size=t0.size()[2])
-        p0 = F.avg_pool2d(p0, kernel_size=p0.size()[2])
-        t0 = torch.reshape(t0, (t0.size(0), -1))
-        p0 = torch.reshape(p0, (p0.size(0), -1))
-        t0 = self.subnet_t1(t0)
-        p0 = self.subnet_p1(p0)
-        concat_h0 = torch.cat((t0, p0), dim=1)
-        concat_h0 = self.dec_fc1(concat_h0)
-        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), 64, self.img_h//(2**5), self.img_w//(2**5)))
-        rec = self.dec(concat_h0)
-        return rec
-
-    def shuffle_reconst(self, input, idx1, idx2):
-        h0 = self.enc(input)
-        t0 = self.subnet_conv_t1(h0)
-        p0 = self.subnet_conv_p1(h0)
-        t0 = self.subnet_conv_t2(t0)
-        p0 = self.subnet_conv_p2(p0)
-        t0 = F.avg_pool2d(t0, kernel_size=t0.size()[2])
-        p0 = F.avg_pool2d(p0, kernel_size=p0.size()[2])
-        t0 = torch.reshape(t0, (t0.size(0), -1))
-        p0 = torch.reshape(p0, (p0.size(0), -1))
-        t0 = self.subnet_t1(t0)
-        p0 = self.subnet_p1(p0)
-        concat_h0 = torch.cat((t0[idx1], p0[idx2]), dim=1)
-        concat_h0 = self.dec_fc1(concat_h0)
-        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), 64, self.img_h//(2**5), self.img_w//(2**5)))
-        rec = self.dec(concat_h0)
-        return rec
 
 
 def main():
@@ -482,13 +316,21 @@ def main():
 
 
 def train_TDAE(data_path='data/toy_data.hdf5'):
-    out_source_dpath = './reports' 
+    args = argparses()
+
     if 'toy' in data_path:
         img_w = 256
         img_h = 256
+        out_source_dpath = './reports/TDAE_toy' 
     else:
         img_w = 224
         img_h = 224
+        out_source_dpath = './reports/TDAE_colon'
+
+    if args.ex is None:
+        pass
+    else:
+        out_source_dpath = out_source_dpath + '/' + args.ex
 
     out_fig_dpath = '{}/figure'.format(out_source_dpath)
     out_param_dpath = '{}/param'.format(out_source_dpath)
@@ -515,8 +357,12 @@ def train_TDAE(data_path='data/toy_data.hdf5'):
 
     train_set = torch.utils.data.dataset.Subset(data_pairs, train_indices)
     val_set = torch.utils.data.dataset.Subset(data_pairs, val_indices)
-    train_loader = DataLoader(train_set, batch_size=64, shuffle=True)
-    val_loader = DataLoader(val_set, batch_size=64, shuffle=False)
+    if args.triplet:
+        train_loader = DataLoader(train_set, batch_size=args.batch, shuffle=True)
+        val_loader = DataLoader(val_set, batch_size=args.batch, shuffle=False)
+    else:
+        train_loader = DataLoader(train_set, batch_size=args.batch*2, shuffle=True)
+        val_loader = DataLoader(val_set, batch_size=args.batch, shuffle=False)
 
     # criterion_adv = nn.NLLLoss()
     criterion_classifier = nn.CrossEntropyLoss()
@@ -526,17 +372,22 @@ def train_TDAE(data_path='data/toy_data.hdf5'):
     # optim_adv = optim.Adam(params_adv, lr=1e-4)
     params_adv = list(model.classifier_sub.parameters())
     optim_adv = optim.Adam(params_adv)
-    # optimizer = optim.Adam(params)
-    optimizer = optim.SGD(params, lr=0.001)
+    optimizer = optim.Adam(params)
+    # optimizer = optim.SGD(params, lr=0.001)
     # scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
     Scores_reg = [[], []]
     Scores_svm = [[], []]
-    n_epochs = 300
+    Scores_reg_adv = [[], []]
+    Scores_svm_adv = [[], []]
+    Vals_reg = [[], []]
+    Vals_svm = [[], []]
+    n_epochs = args.epoch
     best_loss = np.inf
-    l_adv = 1.0e-1 * 0
-    l_recon = 1.0e-0
-    l_tri = 1.0e-2 * 0
-    l_c = 1.0e-0 * 0
+    best_epoch = 0
+    l_adv = args.adv
+    l_recon = args.rec
+    l_tri = args.tri
+    l_c = args.classifier
     for epoch in range(n_epochs):
         accs_p, acc_t = [], []
         Acc, Acc_adv, sub_Acc, sub_Acc_adv  = 0, 0, 0, 0
@@ -548,6 +399,7 @@ def train_TDAE(data_path='data/toy_data.hdf5'):
             optimizer.zero_grad()
             losses = []
             if d2ae_flag:
+                continue
                 optim_adv.zero_grad()
                 preds, sub_preds_adv, sub_preds, reconst = model.forward_train_like_D2AE(in_data.to(device))
                 loss_reconst = l_recon * criterion_reconst(reconst.to(device), in_data.to(device))
@@ -570,23 +422,27 @@ def train_TDAE(data_path='data/toy_data.hdf5'):
                 #     h0_anchor, h0_pos, h0_neg = model.enc(in_data.to(device)), model.enc(p_in_data.to(device)), model.enc(n_in_data.to(device))
                 #     h0_anchor, h0_pos, h0_neg = Variable(h0_anchor), Variable(h0_pos), Variable(h0_neg)
                 # p0_anchor, p0_pos, p0_neg = model.subnets_p(h0_anchor.to(device)), model.subnets_p(h0_pos.to(device)), model.subnets_p(h0_neg.to(device))
-                (_, p0_anchor), (_, p0_pos), (_, p0_neg) = model.hidden_output(in_data.to(device)), model.hidden_output(p_in_data.to(device)), model.hidden_output(n_in_data.to(device))
-                loss_triplet = l_tri * criterion_triplet(p0_anchor, p0_pos, p0_neg)
-                # loss_triplet.backward(retain_graph=True)
-                losses.append(loss_triplet)
+                if args.triplet:
+                    (_, p0_anchor), (_, p0_pos), (_, p0_neg) = model.hidden_output(in_data.to(device)), model.hidden_output(p_in_data.to(device)), model.hidden_output(n_in_data.to(device))
+                    loss_triplet = l_tri * criterion_triplet(p0_anchor, p0_pos, p0_neg)
+                    loss_triplet.backward(retain_graph=True)
+                    losses.append(loss_triplet)
 
-                preds, sub_preds, preds_adv, sub_preds_adv, reconst = model(in_data.to(device))
+                else:
+                    loss_triplet = torch.tensor(0)
+
+                preds, preds_adv, reconst = model(in_data.to(device))
                 loss_reconst = l_recon * criterion_reconst(reconst.to(device), in_data.to(device))
                 loss_reconst.backward(retain_graph=True)
                 losses.append(loss_reconst)
                 
-                loss_adv = l_adv * negative_entropy_loss(sub_preds.to(device))
-                # loss_adv.backward(retain_graph=True)
+                loss_adv = l_adv * negative_entropy_loss(preds_adv.to(device))
+                loss_adv.backward(retain_graph=True)
                 model.classifier_main.zero_grad()
                 losses.append(loss_adv)
                 
                 loss_classifier_main = l_c * criterion_classifier(preds.to(device), target.to(device))
-                # loss_classifier_main.backward(retain_graph=True)
+                loss_classifier_main.backward(retain_graph=True)
                 losses.append(loss_classifier_main)
 
                 optimizer.step()
@@ -603,12 +459,11 @@ def train_TDAE(data_path='data/toy_data.hdf5'):
             y_true = target.to('cpu')
             sub_y_true = sub_target.to('cpu')
             preds = preds.detach().to('cpu')
-            sub_preds = sub_preds.detach().to('cpu')
+            sub_preds = preds_adv.detach().to('cpu')
             Acc += true_positive_multiclass(preds, y_true)
             sub_Acc += true_positive_multiclass(sub_preds, y_true)
 
         print('epoch: {} loss: {} \nAcc: {} sub Acc: {}, Acc_adv: {}, sub Acc_adv: {}'.format(epoch+1, np.mean(Loss), Acc/len(train_set), sub_Acc/len(train_set), Acc_adv/len(train_set), sub_Acc_adv/len(train_set)))
-        print(np.mean(TriLoss))
         writer.add_scalar('summarize loss',
             np.mean(Loss), epoch)
         writer.add_scalar('rec loss',
@@ -638,26 +493,69 @@ def train_TDAE(data_path='data/toy_data.hdf5'):
                     X_train.extend(t0)
                     Y_train1.extend(target1.detach().to('cpu').numpy())
                     Y_train2.extend(target2.detach().to('cpu').numpy())
+
+                X_val, Y_val1, Y_val2 = [], [], []
+                for v_i, (in_data, p_in_data, n_in_data, target1, target2) in enumerate(val_loader):
+                    (_, t0) = model.hidden_output(in_data.to(device))
+                    t0 = t0.detach().to('cpu').numpy()
+                    X_val.extend(t0)
+                    Y_val1.extend(target1.detach().to('cpu').numpy())
+                    Y_val2.extend(target2.detach().to('cpu').numpy())
                 
                 X_train = np.asarray(X_train)
                 Y_train1 = np.asarray(Y_train1)
                 Y_train2 = np.asarray(Y_train2)
+                X_val = np.asarray(X_val)
+                Y_val1 = np.asarray(Y_val1)
+                Y_val2 = np.asarray(Y_val2)
                 logreg = LogisticRegression(penalty='l2', solver="sag")
                 linear_svc = LinearSVC()
-                for it, Y_train in enumerate([Y_train1, Y_train2]):
+                for it, (Y_train, Y_adv, Y_val) in enumerate(zip([Y_train1, Y_train2], [Y_train2, Y_train1], [Y_val1, Y_val2])):
                     logreg.fit(X_train, Y_train)
                     linear_svc.fit(X_train, Y_train)
                     score_reg = logreg.score(X_train, Y_train)
                     score_svm = linear_svc.score(X_train, Y_train)
                     Scores_reg[it].append(score_reg)
                     Scores_svm[it].append(score_svm)
-                    print("Target {} Linear Reg score = {:3f}, SVM score = {:.3f}".format(it, score_reg, score_svm))
 
+                    score_reg = logreg.score(X_val, Y_val)
+                    score_svm = linear_svc.score(X_val, Y_val)
+                    Vals_reg[it].append(score_reg)
+                    Vals_svm[it].append(score_svm)
+
+                    score_reg = logreg.score(X_train, Y_adv)
+                    score_svm = linear_svc.score(X_train, Y_adv)
+                    Scores_reg_adv[it].append(score_reg)
+                    Scores_svm_adv[it].append(score_svm)
                     # 予測　
                     # Y_pred = logreg.predict(X_train)
                     # Y_pred = linear_svc.predict(X_train)
 
                     # スコア
+                writer.add_scalar('Tar1 Reg Score',
+                    np.mean(Scores_reg[0][-1]), epoch)
+                writer.add_scalar('Tar2 Reg Score',
+                    np.mean(Scores_reg[1][-1]), epoch)
+                writer.add_scalar('Tar1 Reg adv Score',
+                    np.mean(Scores_reg_adv[0][-1]), epoch)
+                writer.add_scalar('Tar2 Reg adv Score',
+                    np.mean(Scores_reg_adv[1][-1]), epoch)
+                writer.add_scalar('Tar1 SVM Score',
+                    np.mean(Scores_svm[0][-1]), epoch)
+                writer.add_scalar('Tar2 SVM Score',
+                    np.mean(Scores_svm[1][-1]), epoch)
+                writer.add_scalar('Tar1 SVM adv Score',
+                    np.mean(Scores_svm_adv[0][-1]), epoch)
+                writer.add_scalar('Tar2 SVM adv Score',
+                    np.mean(Scores_svm_adv[1][-1]), epoch)
+                writer.add_scalar('Tar1 Reg Val',
+                    np.mean(Vals_reg[0][-1]), epoch)
+                writer.add_scalar('Tar1 SVM Val',
+                    np.mean(Vals_svm[0][-1]), epoch)
+                writer.add_scalar('Tar2 Reg Val',
+                    np.mean(Vals_reg[1][-1]), epoch)
+                writer.add_scalar('Tar2 SVM Val',
+                    np.mean(Vals_svm[1][-1]), epoch)
 
                 val_losses = []
                 for in_data, p_in_data, n_in_data, target, _ in val_loader:
@@ -669,52 +567,61 @@ def train_TDAE(data_path='data/toy_data.hdf5'):
                         loss_sub_adv = l_adv * negative_entropy_loss(sub_preds_adv.to(device).to(device))
                         val_loss = loss_reconst + loss_classifier_main + loss_sub_adv + loss_classifier_sub
                     else:
-                        h0_anchor, h0_pos, h0_neg = model.enc(in_data.to(device)), model.enc(p_in_data.to(device)), model.enc(n_in_data.to(device))
-                        h0_anchor, h0_pos, h0_neg = Variable(h0_anchor), Variable(h0_pos), Variable(h0_neg)
-                        p0_anchor, p0_pos, p0_neg = model.subnets_p(h0_anchor.to(device)), model.subnets_p(h0_pos.to(device)), model.subnets_p(h0_neg.to(device))
-                        loss_triplet = l_tri * criterion_triplet(p0_anchor, p0_pos, p0_neg)
-                        preds, sub_preds, preds_adv, sub_preds_adv, reconst = model(in_data.to(device))
+                        if args.triplet:
+                            (_, p0_anchor), (_, p0_pos), (_, p0_neg) = model.hidden_output(in_data.to(device)), model.hidden_output(p_in_data.to(device)), model.hidden_output(n_in_data.to(device))
+                            loss_triplet = l_tri * criterion_triplet(p0_anchor, p0_pos, p0_neg)
+                        else:
+                            loss_triplet = torch.tensor(0)
+                        preds, preds_adv, reconst = model(in_data.to(device))
                         val_loss_reconst = l_recon * criterion_reconst(reconst.to(device), in_data.to(device))
                         val_loss_classifier_main = criterion_classifier(preds.to(device), target.to(device))
-                        val_loss_adv = l_adv * negative_entropy_loss(sub_preds.to(device))
+                        val_loss_adv = l_adv * negative_entropy_loss(preds_adv.to(device))
                         val_loss = val_loss_classifier_main + val_loss_reconst + loss_triplet
                         
                     val_losses.append(val_loss.item())
+
                 print('epoch: {} val loss: {}'.format(epoch+1, np.mean(val_losses)))
                 writer.add_scalar('val loss',
                     np.mean(val_losses), epoch)
-                writer.add_scalar('Tar1 Reg Score',
-                    np.mean(Scores_reg[0][-1]), epoch)
-                writer.add_scalar('Tar2 Reg Score',
-                    np.mean(Scores_reg[1][-1]), epoch)
-                writer.add_scalar('Tar1 SVM Score',
-                    np.mean(Scores_svm[0][-1]), epoch)
-                writer.add_scalar('Tar2 SVM Score',
-                    np.mean(Scores_svm[1][-1]), epoch)
 
                 if best_loss > np.mean(val_losses):
+                    best_epoch = epoch + 1
                     best_loss = np.mean(val_losses)
                     torch.save(model.state_dict(), '{}/TDAE_test_bestparam.json'.format(out_param_dpath))
 
     torch.save(model.state_dict(), '{}/TDAE_test_param.json'.format(out_param_dpath))
+    
+    dict_args = copy.copy(vars(args))
+    dict_args['best_epoch'] = best_epoch
+    for k in dict_args.keys():
+        dict_args[k] = [dict_args[k]]
+    df = pd.DataFrame.from_dict(dict_args)
+    df.to_csv('{}/condition.csv'.format(out_source_dpath))
+    
     writer.close()
 
 
 def val_TDAE(data_path='data/toy_data.hdf5'):
+    args = argparses()
     if 'toy_data' in data_path:
         img_w = 256
         img_h = 256
+        out_source_dpath = './reports/TDAE_toy' 
     else:
         img_w = 224
         img_h = 224
-
-    out_source_dpath = './reports' 
+        out_source_dpath = './reports/TDAE_colon' 
+    if args.ex is None:
+        pass
+    else:
+        out_source_dpath = out_source_dpath + '/' + args.ex
+        
     out_val_dpath = '{}/val'.format(out_source_dpath)
     clean_directory(out_val_dpath)
 
     d2ae_flag = False
     model = TDAE_out(n_class1=3, n_class2=5, d2ae_flag = d2ae_flag, img_h=img_h, img_w=img_w)
-    model.load_state_dict(torch.load('./reports/param/TDAE_test_bestparam.json'))
+    model.load_state_dict(torch.load('{}/param/TDAE_test_bestparam.json'.format(out_source_dpath)))
     model = model.to(device)
     srcs, targets1, targets2 = get_triplet_flatted_data(data_path)
 
@@ -729,9 +636,9 @@ def val_TDAE(data_path='data/toy_data.hdf5'):
     train_indices = list(range(0, train_size))
     val_indices = list(range(train_size, train_size+val_size))
 
-    # _ = torch.utils.data.dataset.Subset(data_pairs, train_indices)
+    train_set = torch.utils.data.dataset.Subset(data_pairs, train_indices)
     val_set = torch.utils.data.dataset.Subset(data_pairs, val_indices)
-    # _ = DataLoader(train_set, batch_size=2, shuffle=True)
+    train_loader = DataLoader(train_set, batch_size=2, shuffle=False)
     val_loader = DataLoader(val_set, batch_size=2, shuffle=True)
 
     cat_val_set = val_set
@@ -769,15 +676,124 @@ def val_TDAE(data_path='data/toy_data.hdf5'):
             plt.close(fig)
             if n_iter >= 50:
                 break
+    
+    with torch.no_grad():
+        model.eval()
+        X_train1, X_train2, Y_train1, Y_train2 = [], [], [], []
+        train_hf = []
+        for n_iter, (inputs, targets1, targets2) in enumerate(train_loader):
+            (h0, t0) = model.hidden_output(inputs.to(device))
+            h0 = h0.detach().to('cpu').numpy()
+            t0 = t0.detach().to('cpu').numpy()
+            # ht = np.append(h0, t0, axis=0)
+            X_train1.extend(h0)
+            X_train2.extend(t0)
+            Y_train1.extend(targets1.detach().to('cpu').numpy())
+            Y_train2.extend(targets2.detach().to('cpu').numpy())
+    
+        X_train1 = np.asarray(X_train1)
+        X_train2 = np.asarray(X_train2)
+        Y_train1 = np.asarray(Y_train1)
+        Y_train2 = np.asarray(Y_train2)
+        rn.seed(SEED)
+        np.random.seed(SEED)
+        tsne = TSNE(n_components=2, random_state=SEED)
+        X_train1 = tsne.fit_transform(X_train1)
+        X_train2 = tsne.fit_transform(X_train2)
+
+        fig = plt.figure(figsize=(16*2, 9))
+        ax = fig.add_subplot(1,2,1)
+        for k in np.unique(Y_train1):
+            ax.scatter(x=X_train1[Y_train1==k,0], y=X_train1[Y_train1==k,1], marker='.', alpha=0.5)
+        ax.set_aspect('equal', 'datalim')
+        ax = fig.add_subplot(1,2,2)
+        for k in np.unique(Y_train2):
+            ax.scatter(x=X_train1[Y_train2==k,0], y=X_train1[Y_train2==k,1], marker='.', alpha=0.5)
+        ax.set_aspect('equal', 'datalim')
+        fig.savefig('{}/train_hidden_features_main.png'.format(out_source_dpath))
+        plt.close(fig)
+
+        fig = plt.figure(figsize=(16*2, 9))
+        ax = fig.add_subplot(1,2,1)
+        for k in np.unique(Y_train1):
+            ax.scatter(x=X_train2[Y_train1==k,0], y=X_train2[Y_train1==k,1], marker='.', alpha=0.5)
+        ax.set_aspect('equal', 'datalim')
+        ax = fig.add_subplot(1,2,2)
+        for k in np.unique(Y_train2):
+            ax.scatter(x=X_train2[Y_train2==k,0], y=X_train2[Y_train2==k,1], marker='.', alpha=0.5)
+        ax.set_aspect('equal', 'datalim')
+        fig.savefig('{}/train_hidden_features_sub.png'.format(out_source_dpath))
+        plt.close(fig)
+
+        X1, X2, Y1, Y2 = [], [], [], []
+        train_hf = []
+        for n_iter, (inputs, targets1, targets2) in enumerate(val_loader):
+            (h0, t0) = model.hidden_output(inputs.to(device))
+            h0 = h0.detach().to('cpu').numpy()
+            t0 = t0.detach().to('cpu').numpy()
+            X1.extend(h0)
+            X2.extend(t0)
+            Y1.extend(targets1.detach().to('cpu').numpy())
+            Y2.extend(targets2.detach().to('cpu').numpy())
+    
+        X1 = np.asarray(X1)
+        X2 = np.asarray(X2)
+        Y1 = np.asarray(Y1)
+        Y2 = np.asarray(Y2)
+        rn.seed(SEED)
+        np.random.seed(SEED)
+        tsne = TSNE(n_components=2, random_state=SEED)
+        X1 = tsne.fit_transform(X1)
+        X2 = tsne.fit_transform(X2)
+
+        fig = plt.figure(figsize=(16*2, 9))
+        ax = fig.add_subplot(1,2,1)
+        for k in np.unique(Y1):
+            ax.scatter(x=X2[Y1==k,0], y=X2[Y1==k,1], marker='.', alpha=0.5)
+        ax.set_aspect('equal', 'datalim')
+        ax = fig.add_subplot(1,2,2)
+        for k in np.unique(Y2):
+            ax.scatter(x=X2[Y2==k,0], y=X2[Y2==k,1], marker='.', alpha=0.5)
+        ax.set_aspect('equal', 'datalim')
+        fig.savefig('{}/val_hidden_features_sub.png'.format(out_source_dpath))
+        plt.close(fig)
+
+        fig = plt.figure(figsize=(16*2, 9))
+        ax = fig.add_subplot(1,2,1)
+        for k in np.unique(Y1):
+            ax.scatter(x=X1[Y1==k,0], y=X1[Y1==k,1], marker='.', alpha=0.5)
+        ax.set_aspect('equal', 'datalim')
+        ax = fig.add_subplot(1,2,2)
+        for k in np.unique(Y2):
+            ax.scatter(x=X1[Y2==k,0], y=X1[Y2==k,1], marker='.', alpha=0.5)
+        ax.set_aspect('equal', 'datalim')
+        fig.savefig('{}/val_hidden_features_main.png'.format(out_source_dpath))
+        plt.close(fig)
+
 
     
 if __name__ == '__main__':
     # if os.path.exists('./data/colon_renew.hdf5') is False:
     #     data_review()
-    d = './data/colon_renew.hdf5'
-    d = './data/toy_data_fix_center.hdf5'
-    train_TDAE(d)
-    val_TDAE(d)
+    args = argparses()
+    if args.data == 'toy':
+        if args.mode == 'train':
+            train_TDAE()
+        elif args.mode == 'val':
+            val_TDAE()
+        else:
+            train_TDAE()
+            val_TDAE()
+    elif args.data == 'colon':
+        d = './data/colon_renew.hdf5'
+        if args.mode == 'train':
+            train_TDAE(d)
+        elif args.mode == 'val':
+            val_TDAE(d)
+        else:
+            train_TDAE(d)
+            val_TDAE(d)
+
     sys.exit()
     with h5py.File('./data/colon.hdf5', 'r') as f:
         key_list = list(f.keys())

@@ -90,8 +90,12 @@ def get_triplet_flatted_data(data_dpath):
                             target2[-1] = 0
         
     src = np.asarray(src)
+    p_src = np.asarray(p_src)
+    n_src = np.asarray(n_src)
     if src.max() > 1:
         src = src / 255
+        p_src = p_src / 255
+        n_src = n_src / 255
         # srcs = srcs / srcs.max()
     src = np.transpose(src, (0, 3, 1, 2))
     p_src = np.transpose(p_src, (0, 3, 1, 2))

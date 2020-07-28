@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import copy
 import itertools
 import time
 import argparse
@@ -83,21 +84,34 @@ def statistical_augmentation(features):
 def argparses():
     parser = argparse.ArgumentParser()
     parser.add_argument('--epoch', type=int, default=300)
+    parser.add_argument('--batch', type=int, default=64)
     parser.add_argument('--data', type=str, default='toy')
-    parser.add_argument('--test', action='store_true')
+    parser.add_argument('--mode', type=str, default='all')
+    parser.add_argument('--ex', type=str, default=None)
+    parser.add_argument('--classifier', type=float, default=1e-0)
+    parser.add_argument('--rec', type=float, default=1e-0)
+    parser.add_argument('--adv', type=float, default=1e-1)
+    parser.add_argument('--tri', type=float, default=1e-2)
+    parser.add_argument('--triplet', action='store_true')
+
     return parser.parse_args()
 
 
 def main(data_path='data/toy_data.hdf5'):
-    arg = argparses()
-    out_source_dpath = './reports/Cross' 
+    args = argparses()
     if 'toy_data' in data_path:
         img_w = 256
         img_h = 256
+        out_source_dpath = './reports/Cross_toy' 
     else:
         img_w = 224
         img_h = 224
         out_source_dpath = './reports/Cross_colon' 
+
+    if args.ex is None:
+        pass
+    else:
+        out_source_dpath = out_source_dpath + '/' + args.ex
 
 
     out_fig_dpath = '{}/figure'.format(out_source_dpath)
@@ -134,11 +148,11 @@ def main(data_path='data/toy_data.hdf5'):
     # optim_adv = optim.SGD(params, lr=0.001)
     # scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
     
-    n_epochs = arg.epoch
+    n_epochs = args.epoch
     best_loss = np.inf
-    l_adv = 1.0e-1 * 0
-    l_recon = 1.0e-0
-    l_c = 1.0e-0 * 0
+    l_adv = args.adv
+    l_recon = args.rec
+    l_c = args.classifier
     for epoch in range(n_epochs):
         accs_p, acc_t = [], []
         Acc, Acc_adv, sub_Acc, sub_Acc_adv  = 0, 0, 0, 0
@@ -252,6 +266,14 @@ def main(data_path='data/toy_data.hdf5'):
                     torch.save(model.state_dict(), '{}/test_bestparam.json'.format(out_param_dpath))
 
     torch.save(model.state_dict(), '{}/test_param.json'.format(out_param_dpath))
+
+    dict_args = copy.copy(vars(args))
+    dict_args['best_epoch'] = best_epoch
+    for k in dict_args.keys():
+        dict_args[k] = [dict_args[k]]
+    df = pd.DataFrame.from_dict(dict_args)
+    df.to_csv('{}/condition.csv'.format(out_source_dpath))
+
     writer.close()
 
 
@@ -260,10 +282,16 @@ def validate(data_path='data/toy_data.hdf5'):
     if 'toy_data' in data_path:
         img_w = 256
         img_h = 256
+        out_source_dpath = './reports/Cross_toy' 
     else:
         img_w = 224
         img_h = 224
         out_source_dpath = './reports/Cross_colon' 
+
+    if args.ex is None:
+        pass
+    else:
+        out_source_dpath = out_source_dpath + '/' + args.ex
 
     out_val_dpath = '{}/val'.format(out_source_dpath)
     clean_directory(out_val_dpath)
@@ -284,8 +312,10 @@ def validate(data_path='data/toy_data.hdf5'):
     val_indices = list(range(train_size, train_size+val_size))
     test_indices = list(range(train_size, train_size+val_size))
 
+    train_set = torch.utils.data.dataset.Subset(data_pairs, train_indices)
     val_set = torch.utils.data.dataset.Subset(data_pairs, val_indices)
     test_set = torch.utils.data.dataset.Subset(data_pairs, test_indices)
+    train_loader = DataLoader(train_set, batch_size=2, shuffle=True)
     val_loader = DataLoader(val_set, batch_size=2, shuffle=True)
     test_loader = DataLoader(val_set, batch_size=2, shuffle=True)
 
@@ -325,17 +355,120 @@ def validate(data_path='data/toy_data.hdf5'):
             if n_iter >= 50:
                 break
 
+    with torch.no_grad():
+        model.eval()
+        X_train1, X_train2, Y_train1, Y_train2 = [], [], [], []
+        train_hf = []
+        for n_iter, (inputs, targets1, targets2) in enumerate(train_loader):
+            (h0, t0) = model.hidden_output(inputs.to(device))
+            h0 = h0.detach().to('cpu').numpy()
+            t0 = t0.detach().to('cpu').numpy()
+            # ht = np.append(h0, t0, axis=0)
+            X_train1.extend(h0)
+            X_train2.extend(t0)
+            Y_train1.extend(targets1.detach().to('cpu').numpy())
+            Y_train2.extend(targets2.detach().to('cpu').numpy())
+    
+        X_train1 = np.asarray(X_train1)
+        X_train2 = np.asarray(X_train2)
+        Y_train1 = np.asarray(Y_train1)
+        Y_train2 = np.asarray(Y_train2)
+        rn.seed(SEED)
+        np.random.seed(SEED)
+        tsne = TSNE(n_components=2, random_state=SEED)
+        X_train1 = tsne.fit_transform(X_train1)
+        X_train2 = tsne.fit_transform(X_train2)
+
+        fig = plt.figure(figsize=(16*2, 9))
+        ax = fig.add_subplot(1,2,1)
+        for k in np.unique(Y_train1):
+            ax.scatter(x=X_train1[Y_train1==k,0], y=X_train1[Y_train1==k,1], marker='.', alpha=0.5)
+        ax.set_aspect('equal', 'datalim')
+        ax = fig.add_subplot(1,2,2)
+        for k in np.unique(Y_train2):
+            ax.scatter(x=X_train1[Y_train2==k,0], y=X_train1[Y_train2==k,1], marker='.', alpha=0.5)
+        ax.set_aspect('equal', 'datalim')
+        fig.savefig('{}/train_hidden_features_main.png'.format(out_source_dpath))
+        plt.close(fig)
+
+        fig = plt.figure(figsize=(16*2, 9))
+        ax = fig.add_subplot(1,2,1)
+        for k in np.unique(Y_train1):
+            ax.scatter(x=X_train2[Y_train1==k,0], y=X_train2[Y_train1==k,1], marker='.', alpha=0.5)
+        ax.set_aspect('equal', 'datalim')
+        ax = fig.add_subplot(1,2,2)
+        for k in np.unique(Y_train2):
+            ax.scatter(x=X_train2[Y_train2==k,0], y=X_train2[Y_train2==k,1], marker='.', alpha=0.5)
+        ax.set_aspect('equal', 'datalim')
+        fig.savefig('{}/train_hidden_features_sub.png'.format(out_source_dpath))
+        plt.close(fig)
+
+        X1, X2, Y1, Y2 = [], [], [], []
+        train_hf = []
+        for n_iter, (inputs, targets1, targets2) in enumerate(val_loader):
+            (h0, t0) = model.hidden_output(inputs.to(device))
+            h0 = h0.detach().to('cpu').numpy()
+            t0 = t0.detach().to('cpu').numpy()
+            X1.extend(h0)
+            X2.extend(t0)
+            Y1.extend(targets1.detach().to('cpu').numpy())
+            Y2.extend(targets2.detach().to('cpu').numpy())
+    
+        X1 = np.asarray(X1)
+        X2 = np.asarray(X2)
+        Y1 = np.asarray(Y1)
+        Y2 = np.asarray(Y2)
+        rn.seed(SEED)
+        np.random.seed(SEED)
+        tsne = TSNE(n_components=2, random_state=SEED)
+        X1 = tsne.fit_transform(X1)
+        X2 = tsne.fit_transform(X2)
+
+        fig = plt.figure(figsize=(16*2, 9))
+        ax = fig.add_subplot(1,2,1)
+        for k in np.unique(Y1):
+            ax.scatter(x=X2[Y1==k,0], y=X2[Y1==k,1], marker='.', alpha=0.5)
+        ax.set_aspect('equal', 'datalim')
+        ax = fig.add_subplot(1,2,2)
+        for k in np.unique(Y2):
+            ax.scatter(x=X2[Y2==k,0], y=X2[Y2==k,1], marker='.', alpha=0.5)
+        ax.set_aspect('equal', 'datalim')
+        fig.savefig('{}/val_hidden_features_sub.png'.format(out_source_dpath))
+        plt.close(fig)
+
+        fig = plt.figure(figsize=(16*2, 9))
+        ax = fig.add_subplot(1,2,1)
+        for k in np.unique(Y1):
+            ax.scatter(x=X1[Y1==k,0], y=X1[Y1==k,1], marker='.', alpha=0.5)
+        ax.set_aspect('equal', 'datalim')
+        ax = fig.add_subplot(1,2,2)
+        for k in np.unique(Y2):
+            ax.scatter(x=X1[Y2==k,0], y=X1[Y2==k,1], marker='.', alpha=0.5)
+        ax.set_aspect('equal', 'datalim')
+        fig.savefig('{}/val_hidden_features_main.png'.format(out_source_dpath))
+        plt.close(fig)
+
     
 if __name__ == '__main__':
     # if os.path.exists('./data/colon_renew.hdf5') is False:
     #     data_review()
-    arg = argparses()
-    if arg.data == 'toy':
-        main()
-        validate()
-    elif arg.data == 'colon':
+    args = argparses()
+    if args.data == 'toy':
+        if args.mode == 'train':
+            main()
+        elif args.mode == 'val':
+            validate()
+        else:
+            main()
+            validate()
+    elif args.data == 'colon':
         d = './data/colon_renew.hdf5'
-        main(d)
-        validate(d)
+        if args.mode == 'train':
+            main(d)
+        elif args.mode == 'val':
+            validate(d)
+        else:
+            main(d)
+            validate(d)
     else:
-        print(arg)
+        print(args)
