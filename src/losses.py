@@ -5,6 +5,49 @@ import torch.nn as nn
 import torch.nn.functional as F
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
+class Fourier_mse(nn.Module):
+    def __init__(self, img_w, img_h, mask=False, dm=0, sep=False):
+        super(Fourier_mse, self).__init__()
+        if mask:
+            self.mask = torch.ones((1, img_w, img_h, 2))
+            for u, v in itertools.product(np.arange(-dm, dm), np.arange(-dm, dm)):
+                if np.abs(u) + np.abs(v):
+                    self.mask[0, img_h//2+u, img_w//2+v, :] = 0
+            # self.mask = 1 - self.mask
+        else:
+            self.mask = torch.ones((1, img_w, img_h, 2))
+        self.sep = sep
+
+    def forward(self, inputs, targets):
+        sum_loss = 0
+        M = self.mask.repeat((inputs.size(0), 1, 1, 1))
+        for c in range(inputs.size(1)):
+            cat_inputs = inputs[:, c, :, :, None]
+            comp_inputs = torch.cat((cat_inputs, torch.zeros_like(cat_inputs)), axis=-1)
+            cat_targets = targets[:, c, :, :, None]
+            comp_targets = torch.cat((cat_targets, torch.zeros_like(cat_targets)), axis=-1)
+
+            ft_inputs = torch.fft(comp_inputs, 2)
+            ft_targets = torch.fft(comp_targets, 2)
+            diff_ft = nn.MSELoss()(ft_inputs*M, ft_targets*M)
+            sum_loss = sum_loss + diff_ft
+
+        return sum_loss / 3
+
+    def predict(self, inputs):
+        M = self.mask.repeat((inputs.size(0), 1, 1))
+        dst = []
+        for c in range(inputs.size(1)):
+            cat_inputs = inputs[:, c, :, :, None]
+            comp_inputs = torch.cat((cat_inputs, torch.zeros_like(cat_inputs)), axis=-1)
+            
+            ft_inputs = torch.fft(comp_inputs, 2)
+            buff = M * ft_inputs
+            dst.append(buff)
+
+        return dst_real
+
+
 class TripletLoss(nn.Module):
     """
     Triplet loss

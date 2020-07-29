@@ -87,12 +87,14 @@ def argparses():
     parser.add_argument('--batch', type=int, default=64)
     parser.add_argument('--data', type=str, default='toy')
     parser.add_argument('--mode', type=str, default='all')
+    parser.add_argument('--param', type=str, default='best')
     parser.add_argument('--ex', type=str, default=None)
     parser.add_argument('--classifier', type=float, default=1e-0)
     parser.add_argument('--rec', type=float, default=1e-0)
     parser.add_argument('--adv', type=float, default=1e-1)
     parser.add_argument('--tri', type=float, default=1e-2)
     parser.add_argument('--triplet', action='store_true')
+    parser.add_argument('--retrain', action='store_true')
 
     return parser.parse_args()
 
@@ -113,19 +115,28 @@ def main(data_path='data/toy_data.hdf5'):
     else:
         out_source_dpath = out_source_dpath + '/' + args.ex
 
-
-    out_fig_dpath = '{}/figure'.format(out_source_dpath)
-    out_param_dpath = '{}/param'.format(out_source_dpath)
-    out_board_dpath = '{}/runs'.format(out_source_dpath)
-    clean_directory(out_fig_dpath)
-    clean_directory(out_param_dpath)
-    clean_directory(out_board_dpath)
     d2ae_flag = False
-    writer = tbx.SummaryWriter(out_board_dpath)
-
     srcs, targets1, targets2 = get_flatted_data(data_path)
     data_pairs = torch.utils.data.TensorDataset(srcs, targets1, targets2)
     model = CrossDisentangleNet(n_class1=torch.unique(targets1).size(0), n_class2=torch.unique(targets2).size(0), img_h=img_h, img_w=img_w)
+
+    if args.retrain:
+        model.load_state_dict(torch.load('{}/param/test_param.json'.format(out_source_dpath)))
+        out_fig_dpath = '{}/re_figure'.format(out_source_dpath)
+        out_param_dpath = '{}/re_param'.format(out_source_dpath)
+        out_board_dpath = '{}/re_runs'.format(out_source_dpath)
+        out_condition_dpath = '{}/re_condition'.format(out_source_dpath)
+    else:
+        out_fig_dpath = '{}/figure'.format(out_source_dpath)
+        out_param_dpath = '{}/param'.format(out_source_dpath)
+        out_board_dpath = '{}/runs'.format(out_source_dpath)
+        out_condition_dpath = '{}/condition'.format(out_source_dpath)
+    clean_directory(out_fig_dpath)
+    clean_directory(out_param_dpath)
+    clean_directory(out_board_dpath)
+    clean_directory(out_condition_dpath)
+    writer = tbx.SummaryWriter(out_board_dpath)
+
     model = model.to(device)
     ratio = [0.7, 0.2, 0.1]
     n_sample = len(data_pairs)
@@ -153,6 +164,7 @@ def main(data_path='data/toy_data.hdf5'):
     l_adv = args.adv
     l_recon = args.rec
     l_c = args.classifier
+    best_epoch = 0
     for epoch in range(n_epochs):
         accs_p, acc_t = [], []
         Acc, Acc_adv, sub_Acc, sub_Acc_adv  = 0, 0, 0, 0
@@ -226,17 +238,23 @@ def main(data_path='data/toy_data.hdf5'):
                     writer.add_image('test', img_grid, epoch+1)
                     break
                 val_losses = []
+                val_main_loss = []
+                val_sub_loss = []
+                val_rec_loss = []
                 Acc, Acc_adv, sub_Acc, sub_Acc_adv  = 0, 0, 0, 0
 
                 for in_data, target, sub_target in val_loader:
                     preds_main, preds_sub, adv_preds_main, adv_preds_sub, reconst = model(in_data.to(device))
-                    loss_reconst = l_recon*criterion_reconst(reconst.to(device), in_data.to(device))
-                    # loss_main_adv = l_adv*negative_entropy_loss(adv_preds_main.to(device))
-                    # loss_sub_adv = l_adv*negative_entropy_loss(adv_preds_sub.to(device))
+                    loss_reconst = l_recon * criterion_reconst(reconst.to(device), in_data.to(device))
+                    loss_main_adv = l_adv * negative_entropy_loss(adv_preds_main.to(device))
+                    loss_sub_adv = l_adv * negative_entropy_loss(adv_preds_sub.to(device))
                     loss_classifier_main = l_c * criterion_classifier(preds_main.to(device), target.to(device))
                     loss_classifier_sub = l_c * criterion_classifier(preds_sub.to(device), sub_target.to(device))
-                    val_loss = loss_reconst + loss_classifier_main + loss_classifier_sub
+                    val_loss = loss_reconst + loss_classifier_main + loss_classifier_sub + loss_main_adv + loss_sub_adv
                     val_losses.append(val_loss.item())
+                    val_main_loss.append(loss_classifier_main.item())
+                    val_sub_loss.append(loss_classifier_sub.item())
+                    val_rec_loss.append(loss_reconst.item())
 
                     y_true = target.to('cpu')
                     sub_y_true = sub_target.to('cpu')
@@ -263,6 +281,7 @@ def main(data_path='data/toy_data.hdf5'):
 
                 if best_loss > np.mean(val_losses):
                     best_loss = np.mean(val_losses)
+                    best_epoch = epoch + 1
                     torch.save(model.state_dict(), '{}/test_bestparam.json'.format(out_param_dpath))
 
     torch.save(model.state_dict(), '{}/test_param.json'.format(out_param_dpath))
@@ -272,13 +291,13 @@ def main(data_path='data/toy_data.hdf5'):
     for k in dict_args.keys():
         dict_args[k] = [dict_args[k]]
     df = pd.DataFrame.from_dict(dict_args)
-    df.to_csv('{}/condition.csv'.format(out_source_dpath))
+    df.to_csv('{}/condition.csv'.format(out_condition_dpath))
 
     writer.close()
 
 
 def validate(data_path='data/toy_data.hdf5'):
-    out_source_dpath = './reports/Cross' 
+    args = argparses()
     if 'toy_data' in data_path:
         img_w = 256
         img_h = 256
@@ -293,12 +312,24 @@ def validate(data_path='data/toy_data.hdf5'):
     else:
         out_source_dpath = out_source_dpath + '/' + args.ex
 
-    out_val_dpath = '{}/val'.format(out_source_dpath)
+    if args.retrain:
+        out_param_dpath = '{}/re_param'.format(out_source_dpath)
+        out_fig_dpath = '{}/re_fig_{}'.format(out_source_dpath, args.param)
+        out_val_dpath = '{}/re_val_{}'.format(out_source_dpath, args.param)
+    else:
+        out_param_dpath = '{}/param'.format(out_source_dpath)
+        out_fig_dpath = '{}/fig_{}'.format(out_source_dpath, args.param)
+        out_val_dpath = '{}/val_{}'.format(out_source_dpath, args.param)
     clean_directory(out_val_dpath)
+    clean_directory(out_fig_dpath)
 
     srcs, targets1, targets2 = get_triplet_flatted_data(data_path)
     model = CrossDisentangleNet(n_class1=torch.unique(targets1).size(0), n_class2=torch.unique(targets2).size(0), img_h=img_h, img_w=img_w)
-    model.load_state_dict(torch.load('{}/param/test_bestparam.json'.format(out_source_dpath)))
+    if args.param == 'best':
+        model.load_state_dict(torch.load('{}/test_bestparam.json'.format(out_param_dpath)))
+    else:
+        model.load_state_dict(torch.load('{}/test_param.json'.format(out_param_dpath)))
+        
     model = model.to(device)
 
     data_pairs = torch.utils.data.TensorDataset(srcs[0], targets1, targets2)
@@ -388,7 +419,7 @@ def validate(data_path='data/toy_data.hdf5'):
         for k in np.unique(Y_train2):
             ax.scatter(x=X_train1[Y_train2==k,0], y=X_train1[Y_train2==k,1], marker='.', alpha=0.5)
         ax.set_aspect('equal', 'datalim')
-        fig.savefig('{}/train_hidden_features_main.png'.format(out_source_dpath))
+        fig.savefig('{}/train_hidden_features_main.png'.format(out_fig_dpath))
         plt.close(fig)
 
         fig = plt.figure(figsize=(16*2, 9))
@@ -400,7 +431,7 @@ def validate(data_path='data/toy_data.hdf5'):
         for k in np.unique(Y_train2):
             ax.scatter(x=X_train2[Y_train2==k,0], y=X_train2[Y_train2==k,1], marker='.', alpha=0.5)
         ax.set_aspect('equal', 'datalim')
-        fig.savefig('{}/train_hidden_features_sub.png'.format(out_source_dpath))
+        fig.savefig('{}/train_hidden_features_sub.png'.format(out_fig_dpath))
         plt.close(fig)
 
         X1, X2, Y1, Y2 = [], [], [], []
@@ -433,7 +464,7 @@ def validate(data_path='data/toy_data.hdf5'):
         for k in np.unique(Y2):
             ax.scatter(x=X2[Y2==k,0], y=X2[Y2==k,1], marker='.', alpha=0.5)
         ax.set_aspect('equal', 'datalim')
-        fig.savefig('{}/val_hidden_features_sub.png'.format(out_source_dpath))
+        fig.savefig('{}/val_hidden_features_sub.png'.format(out_fig_dpath))
         plt.close(fig)
 
         fig = plt.figure(figsize=(16*2, 9))
@@ -445,7 +476,7 @@ def validate(data_path='data/toy_data.hdf5'):
         for k in np.unique(Y2):
             ax.scatter(x=X1[Y2==k,0], y=X1[Y2==k,1], marker='.', alpha=0.5)
         ax.set_aspect('equal', 'datalim')
-        fig.savefig('{}/val_hidden_features_main.png'.format(out_source_dpath))
+        fig.savefig('{}/val_hidden_features_main.png'.format(out_fig_dpath))
         plt.close(fig)
 
     

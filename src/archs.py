@@ -337,6 +337,13 @@ class TDAE_out(nn.Module):
         rec = self.dec(concat_h0)
         return class_main_preds, class_main_preds_adv, rec
 
+    def predict_label(self, input):
+        h0 = self.enc(input)
+        t0 = self.subnets_t(h0)
+        p0 = self.subnets_p(h0)
+        class_main_preds = self.classifier_main(t0)
+        class_main_preds_adv = self.classifier_main(p0)
+        return torch.max(class_main_preds, 1), torch.max(class_main_preds_adv, 1)
 
     def hidden_output(self, input):
         h0 = self.enc(input)
@@ -488,6 +495,16 @@ class CrossDisentangleNet(nn.Module):
         concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), 64, self.img_h//(2**5), self.img_w//(2**5)))
         rec = self.dec(concat_h0)
         return preds_main, preds_sub, adv_preds_main, adv_preds_sub, rec
+
+    def predict_label(self, input):
+        h0 = self.enc(input)
+        t0 = self.subnets_t(h0)
+        p0 = self.subnets_p(h0)
+        class_main_preds = self.classifier_main(t0)
+        class_main_preds_adv = self.classifier_main(p0)
+        class_sub_preds = self.classifier_sub(p0)
+        class_sub_preds_adv = self.classifier_sub(t0)
+        return torch.max(class_main_preds, 1), torch.max(class_sub_preds, 1), torch.max(class_main_preds_adv, 1), torch.max(class_sub_preds_adv, 1)
 
     def hidden_output(self, input):
         h0 = self.enc(input)

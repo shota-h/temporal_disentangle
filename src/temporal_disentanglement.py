@@ -32,7 +32,7 @@ import torchvision.models as models
 from torchvision.utils import make_grid
 import tensorboardX as tbx
 
-from losses import TripletLoss, negative_entropy_loss
+from losses import TripletLoss, negative_entropy_loss, Fourier_mse
 from metrics import true_positive_multiclass, true_positive, true_negative
 from __init__ import clean_directory 
 from data_handling import get_triplet_flatted_data, get_flatted_data
@@ -51,14 +51,19 @@ def argparses():
     parser = argparse.ArgumentParser()
     parser.add_argument('--epoch', type=int, default=300)
     parser.add_argument('--batch', type=int, default=64)
+    parser.add_argument('--dm', type=int, default=0)
     parser.add_argument('--data', type=str, default='toy')
     parser.add_argument('--mode', type=str, default='all')
+    parser.add_argument('--param', type=str, default='best')
     parser.add_argument('--ex', type=str, default=None)
     parser.add_argument('--classifier', type=float, default=1e-0)
     parser.add_argument('--rec', type=float, default=1e-0)
     parser.add_argument('--adv', type=float, default=1e-1)
     parser.add_argument('--tri', type=float, default=1e-2)
+    parser.add_argument('--margin', type=float, default=0.0)
     parser.add_argument('--triplet', action='store_true')
+    parser.add_argument('--retrain', action='store_true')
+    parser.add_argument('--fou', action='store_true')
     return parser.parse_args()
 
 
@@ -122,199 +127,6 @@ def statistical_augmentation(features):
     return outs
 
 
-def main():
-    def output_reconst_img(x0, rec_x0, path):
-            x0 = x0.detach().numpy()
-            x0 = np.transpose(x0, (1, 2, 0))
-            rec_x0 = rec_x0.detach().to('cpu').numpy()
-            rec_x0 = np.transpose(rec_x0, (1, 2, 0))
-            x0 = np.append(x0, rec_x0, axis=1)
-            x0 = cv2.cvtColor(x0, cv2.COLOR_BGR2RGB)
-            cv2.imwrite(path, np.uint8(255*x0))
-
-
-    label_dict = {'part_label': 3,
-                    'mayo_label': 5}
-    from torchsummary import summary
-    writer = tbx.SummaryWriter('./test_disentangle/learning_process')
-    labels = ['mayo_label']
-    n_class = 5
-    model = D2AE(n_class)
-    model.to(device)
-    # summary(model, (3,224,224))
-
-    dataloader = GetHDF5dataset_MultiLabel('./dataset/colon_DirSplit.hdf5', label_name=labels, n_sample=-1)
-    
-    x0 = dataloader.samples
-    x0 = np.transpose(x0, (0, 3, 1, 2))
-    t = dataloader.targets
-    
-    n_sample = len(x0)
-    idx = list(range(0, n_sample))
-    np.random.seed(SEED)
-    np.random.shuffle(idx)
-    x0 = x0[idx]
-    
-    t_dict = {}
-    for l in range(len(labels)):
-        t_dict[l] = t[l, :] - 1
-
-    for k in t_dict.keys():
-        t_dict[k] = t_dict[k][idx]
-    del dataloader
-    data_pairs = torch.utils.data.TensorDataset(torch.from_numpy(x0).float(),
-                                                torch.from_numpy(t_dict[0]).long())
-    ratio = 0.8
-    n_sample = len(data_pairs)
-    train_size = int(n_sample*ratio)
-    val_size = n_sample - train_size
-    
-    # train_set, val_set = torch.utils.data.random_split(data_pairs, [train_size, val_size])
-    # train_loader = DataLoader(train_set, batch_size=32, shuffle=True)
-    # val_loader = DataLoader(val_set, batch_size=32, shuffle=False)
-    train_size = int(n_sample * ratio)
-    val_size = n_sample - train_size
-    train_indices = list(range(0, train_size))
-    val_indices = list(range(train_size, n_sample))
-
-    train_set = torch.utils.data.dataset.Subset(data_pairs, train_indices)
-    val_set = torch.utils.data.dataset.Subset(data_pairs, val_indices)
-    train_loader = DataLoader(train_set, batch_size=32, shuffle=True)
-    val_loader = DataLoader(val_set, batch_size=32, shuffle=False)
-
-    # criterion_adv = nn.NLLLoss()
-    criterion_pred = nn.CrossEntropyLoss()
-    criterion_rec = nn.MSELoss()
-    params_adv = list(model.classifier_p.parameters())
-    params = list(model.parameters())
-    # optim_adv = optim.Adam(params_adv, lr=1e-4)
-    # optimizer = optim.Adam(params, lr=1e-4)
-    optim_adv = optim.SGD(params_adv, lr=0.1)
-    optimizer = optim.SGD(params, lr=0.1)
-    # scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
-    # scheduler_adv = StepLR(optim_adv, step_size=10, gamma=0.1)
-    
-    n_epochs = 200
-    model.train()
-    # l_rec = 1.81e-5
-    l_rec = 1
-    l_adv = 1e-1
-    for epoch in range(n_epochs):
-        losses = []
-        accs_p = []
-        accs_t = []
-        for iter, (in_data, target) in enumerate(train_loader):
-            optimizer.zero_grad()
-            model.zero_grad()
-            in_data /= 255
-            rec, pred_t, pred_p, aug_rec = model(in_data.to(device))
-            # grads = torch.autograd.grad(outputs=, inputs=, create_graph=True)
-            # rank_idx, rank_label = make_index_rankingloss(target.detach().to('cpu').numpy())
-
-            loss_i = criterion_pred(pred_t.to(device), target.to(device))
-            loss_h = l_adv * criterion_pred(pred_p.to(device), target.to(device))
-            loss_adv = l_adv * negative_entropy_loss(pred_p.to(device))
-            # loss_rec = l_rec * criterion_rec(rec.to(device), in_data.to(device))
-            # loss_rec_aug = l_rec * criterion_rec(aug_rec.to(device), in_data.to(device))
-            # loss = loss_i + loss_h + loss_rec + loss_rec_aug
-            loss = loss_i + loss_h
-            
-            loss.backward(retain_graph=True)
-            model.classifier_p.zero_grad()
-            optimizer.step()
-            optimizer.zero_grad()
-
-            loss_adv.backward(retain_graph=True)
-            optim_adv.step()
-            optimizer.zero_grad()
-
-            with torch.no_grad():
-                rec, pred_t, pred_p, aug_rec = model(in_data.to(device))
-            y_true = target.to('cpu')
-            pred_p = pred_p.detach().to('cpu')
-            pred_t = pred_t.detach().to('cpu')
-            tp_p = true_positive_multiclass(pred_p, y_true)
-            tp_t = true_positive_multiclass(pred_t, y_true)
-            acc_p = tp_p / len(in_data)
-            acc_t = tp_t / len(in_data)
-
-            accs_p.append(acc_p)
-            accs_t.append(acc_t)
-            # losses.append((loss+loss_adv).item())
-            losses.append(loss.item())
-
-        # output_reconst_img(in_data[0], rec[0], '{}/test_disentangle/reconst.png'.format(current_path))
-
-        print('epoch:{}, loss:{}, acc_p:{}, acc_t:{}'.format(epoch+1, np.mean(losses), np.mean(accs_p), np.mean(accs_t)))
-        writer.add_scalar('data/train_loss', np.mean(np.array(losses)), (epoch + 1))
-        writer.add_scalar('data/train_acc_p', np.mean(np.array(accs_p)), (epoch + 1))
-        writer.add_scalar('data/train_acc_t', np.mean(np.array(accs_t)), (epoch + 1))
-
-        if (epoch + 1) % 10 == 0:
-            # x0 = in_data[0].detach().numpy()
-            # x0 = np.transpose(x0, (1, 2, 0))
-            # rec_x0 = rec[0].detach().to('cpu').numpy()
-            # rec_x0 = np.transpose(rec_x0, (1, 2, 0))
-            # x0 = np.append(x0, rec_x0, axis=1)
-            # x0 = cv2.cvtColor(x0, cv2.COLOR_BGR2RGB)
-            # cv2.imwrite('{}/test_disentangle/reconst.png'.format(current_path), np.uint8(255*x0))
-            conf_mat_p = confusion_matrix(y_true, onehot2label(pred_p))
-            conf_mat_t = confusion_matrix(y_true, onehot2label(pred_t))
-            print(conf_mat_p)
-            print(conf_mat_t)
-
-            with torch.no_grad():
-                val_loss = []
-                acc_p = 0
-                acc_t = 0
-                for iter, (in_data, target) in enumerate(val_loader):
-                    in_data /= 255
-                    rec, pred_t, pred_p, aug_rec = model(in_data.to(device))
-
-                    loss_i = criterion_pred(pred_t.to(device), target.to(device))
-                    loss_h = l_adv * criterion_pred(pred_p.to(device), target.to(device))
-                    loss_adv = l_adv * negative_entropy_loss(pred_p.to(device))
-                    loss_rec = l_rec * criterion_rec(rec.to(device), in_data.to(device))
-                    loss_rec_aug = l_rec * criterion_rec(aug_rec.to(device), in_data.to(device))
-                    loss = loss_i + loss_h + loss_rec + loss_rec_aug
-
-                    y_true = target.to('cpu')
-                    pred_p = pred_p.detach().to('cpu')
-                    pred_t = pred_t.detach().to('cpu')
-                    tp_p = true_positive_multiclass(pred_p, y_true)
-                    tp_t = true_positive_multiclass(pred_t, y_true)
-                    val_loss.append(loss.item())
-                    acc_p += tp_p
-                    acc_t += tp_t
-
-            print('epoch:{}, loss:{}, acc_p:{}, acc_t:{}'.format(epoch+1, np.mean(val_loss), acc_p/(n_sample-train_size), acc_t/(n_sample-train_size)))
-            writer.add_scalar('data/val_loss', np.mean(val_loss), (epoch + 1))
-            writer.add_scalar('data/val_acc_p', acc_p/(n_sample-train_size), (epoch + 1))
-            writer.add_scalar('data/val_acc_t', acc_t/(n_sample-train_size), (epoch + 1))
-        
-        # model.eval()
-        # if (epoch + 1) % 10 == 0:
-        #     val_losses = []
-        #     val_accs = []
-        #     with torch.no_grad():
-        #         for iter, (in_data, out_data) in enumerate(val_loader):
-        #             y = model(in_data.to(device))
-        #             loss = criterion(y.float().to(device), out_data.float().to(device))
-        #             val_losses.append(loss.item())
-        #             y_true = out_data.to('cpu').numpy()
-        #             y_pred = y.detach().to('cpu').numpy()
-        #             tn = true_negative(y_true.reshape(-1), y_pred.reshape(-1))
-        #             tp = true_positive(y_true.reshape(-1), y_pred.reshape(-1))
-        #             acc = (tn + tp)/len(y_true)
-        #             val_accs.append(acc)
-
-        #     writer.add_scalar('data/val_loss', np.mean(np.array(val_losses)), (epoch + 1))
-        #     writer.add_scalar('data/val_acc', np.mean(np.array(val_accs)), (epoch + 1))
-        #     print('epoch [{}/{}], val loss:{:.6f}, val acc:{:.4f}'.format(epoch+1, n_epochs, np.asarray(val_losses).mean(), np.asarray(val_accs).mean()))
-    writer.close()
-    torch.save(model.state_dict(), '{}/temp_disentangle/model_param.json'.format(current_path))
-
-
 def train_TDAE(data_path='data/toy_data.hdf5'):
     args = argparses()
 
@@ -332,18 +144,28 @@ def train_TDAE(data_path='data/toy_data.hdf5'):
     else:
         out_source_dpath = out_source_dpath + '/' + args.ex
 
-    out_fig_dpath = '{}/figure'.format(out_source_dpath)
-    out_param_dpath = '{}/param'.format(out_source_dpath)
-    out_board_dpath = '{}/runs'.format(out_source_dpath)
+    d2ae_flag = False
+    model = TDAE_out(n_class1=3, n_class2=5, d2ae_flag = d2ae_flag, img_h=img_h, img_w=img_w)
+    srcs, targets1, targets2 = get_triplet_flatted_data(data_path)
+    data_pairs = torch.utils.data.TensorDataset(srcs[0], srcs[1], srcs[2], targets1, targets2)
+    
+    if args.retrain:
+        model.load_state_dict(torch.load('{}/param/TDAE_test_param.json'.format(out_source_dpath)))
+        out_fig_dpath = '{}/re_figure'.format(out_source_dpath)
+        out_param_dpath = '{}/re_param'.format(out_source_dpath)
+        out_board_dpath = '{}/re_runs'.format(out_source_dpath)
+        out_condition_dpath = '{}/re_condition'.format(out_source_dpath)
+    else:
+        out_fig_dpath = '{}/figure'.format(out_source_dpath)
+        out_param_dpath = '{}/param'.format(out_source_dpath)
+        out_board_dpath = '{}/runs'.format(out_source_dpath)
+        out_condition_dpath = '{}/condition'.format(out_source_dpath)
     clean_directory(out_fig_dpath)
     clean_directory(out_param_dpath)
     clean_directory(out_board_dpath)
-    d2ae_flag = False
+    clean_directory(out_condition_dpath)
     writer = tbx.SummaryWriter(out_board_dpath)
 
-    srcs, targets1, targets2 = get_triplet_flatted_data(data_path)
-    data_pairs = torch.utils.data.TensorDataset(srcs[0], srcs[1], srcs[2], targets1, targets2)
-    model = TDAE_out(n_class1=3, n_class2=5, d2ae_flag = d2ae_flag, img_h=img_h, img_w=img_w)
     model = model.to(device)
     ratio = [0.7, 0.2, 0.1]
     n_sample = len(data_pairs)
@@ -366,8 +188,12 @@ def train_TDAE(data_path='data/toy_data.hdf5'):
 
     # criterion_adv = nn.NLLLoss()
     criterion_classifier = nn.CrossEntropyLoss()
-    criterion_reconst = nn.MSELoss()
-    criterion_triplet = TripletLoss()
+    criterion_triplet = TripletLoss(margin=args.margin)
+    if args.fou:
+        criterion_reconst = Fourier_mse(img_h=img_h, img_w=img_w, mask=True, dm=args.dm)
+    else:
+        criterion_reconst = nn.MSELoss()
+
     params = list(model.parameters())
     # optim_adv = optim.Adam(params_adv, lr=1e-4)
     params_adv = list(model.classifier_sub.parameters())
@@ -558,6 +384,9 @@ def train_TDAE(data_path='data/toy_data.hdf5'):
                     np.mean(Vals_svm[1][-1]), epoch)
 
                 val_losses = []
+                val_c_loss = []
+                val_r_loss = []
+                val_a_loss = []
                 for in_data, p_in_data, n_in_data, target, _ in val_loader:
                     if d2ae_flag:
                         preds, sub_preds_adv, sub_preds, reconst = model.forward_train_like_D2AE(in_data.to(device))
@@ -574,15 +403,24 @@ def train_TDAE(data_path='data/toy_data.hdf5'):
                             loss_triplet = torch.tensor(0)
                         preds, preds_adv, reconst = model(in_data.to(device))
                         val_loss_reconst = l_recon * criterion_reconst(reconst.to(device), in_data.to(device))
-                        val_loss_classifier_main = criterion_classifier(preds.to(device), target.to(device))
+                        val_loss_classifier_main = l_c * criterion_classifier(preds.to(device), target.to(device))
                         val_loss_adv = l_adv * negative_entropy_loss(preds_adv.to(device))
-                        val_loss = val_loss_classifier_main + val_loss_reconst + loss_triplet
+                        val_loss = val_loss_classifier_main + val_loss_reconst + loss_triplet + val_loss_adv
                         
+                    val_c_loss.append(val_loss_classifier_main.item())
+                    val_r_loss.append(val_loss_reconst.item())
                     val_losses.append(val_loss.item())
+                    val_a_loss.append(val_loss_adv.item())
 
                 print('epoch: {} val loss: {}'.format(epoch+1, np.mean(val_losses)))
                 writer.add_scalar('val loss',
                     np.mean(val_losses), epoch)
+                writer.add_scalar('val classifier loss',
+                    np.mean(val_c_loss), epoch)
+                writer.add_scalar('val reconst loss',
+                    np.mean(val_r_loss), epoch)
+                writer.add_scalar('val adv loss',
+                    np.mean(val_a_loss), epoch)
 
                 if best_loss > np.mean(val_losses):
                     best_epoch = epoch + 1
@@ -596,7 +434,7 @@ def train_TDAE(data_path='data/toy_data.hdf5'):
     for k in dict_args.keys():
         dict_args[k] = [dict_args[k]]
     df = pd.DataFrame.from_dict(dict_args)
-    df.to_csv('{}/condition.csv'.format(out_source_dpath))
+    df.to_csv('{}/condition.csv'.format(out_condition_dpath))
     
     writer.close()
 
@@ -615,13 +453,23 @@ def val_TDAE(data_path='data/toy_data.hdf5'):
         pass
     else:
         out_source_dpath = out_source_dpath + '/' + args.ex
-        
-    out_val_dpath = '{}/val'.format(out_source_dpath)
+    if args.retrain:
+        out_param_dpath = '{}/re_param'.format(out_source_dpath)
+        out_val_dpath = '{}/re_val_{}'.format(out_source_dpath, args.param)
+        out_fig_dpath = '{}/re_fig_{}'.format(out_source_dpath, args.param)
+    else:
+        out_param_dpath = '{}/param'.format(out_source_dpath)
+        out_val_dpath = '{}/val_{}'.format(out_source_dpath, args.param)
+        out_fig_dpath = '{}/fig_{}'.format(out_source_dpath, args.param)
     clean_directory(out_val_dpath)
+    clean_directory(out_fig_dpath)
 
     d2ae_flag = False
     model = TDAE_out(n_class1=3, n_class2=5, d2ae_flag = d2ae_flag, img_h=img_h, img_w=img_w)
-    model.load_state_dict(torch.load('{}/param/TDAE_test_bestparam.json'.format(out_source_dpath)))
+    if args.param == 'best':
+        model.load_state_dict(torch.load('{}/TDAE_test_bestparam.json'.format(out_param_dpath)))
+    else:
+        model.load_state_dict(torch.load('{}/TDAE_test_param.json'.format(out_param_dpath)))
     model = model.to(device)
     srcs, targets1, targets2 = get_triplet_flatted_data(data_path)
 
@@ -710,7 +558,7 @@ def val_TDAE(data_path='data/toy_data.hdf5'):
         for k in np.unique(Y_train2):
             ax.scatter(x=X_train1[Y_train2==k,0], y=X_train1[Y_train2==k,1], marker='.', alpha=0.5)
         ax.set_aspect('equal', 'datalim')
-        fig.savefig('{}/train_hidden_features_main.png'.format(out_source_dpath))
+        fig.savefig('{}/train_hidden_features_main.png'.format(out_fig_dpath))
         plt.close(fig)
 
         fig = plt.figure(figsize=(16*2, 9))
@@ -722,7 +570,7 @@ def val_TDAE(data_path='data/toy_data.hdf5'):
         for k in np.unique(Y_train2):
             ax.scatter(x=X_train2[Y_train2==k,0], y=X_train2[Y_train2==k,1], marker='.', alpha=0.5)
         ax.set_aspect('equal', 'datalim')
-        fig.savefig('{}/train_hidden_features_sub.png'.format(out_source_dpath))
+        fig.savefig('{}/train_hidden_features_sub.png'.format(out_fig_dpath))
         plt.close(fig)
 
         X1, X2, Y1, Y2 = [], [], [], []
@@ -755,7 +603,7 @@ def val_TDAE(data_path='data/toy_data.hdf5'):
         for k in np.unique(Y2):
             ax.scatter(x=X2[Y2==k,0], y=X2[Y2==k,1], marker='.', alpha=0.5)
         ax.set_aspect('equal', 'datalim')
-        fig.savefig('{}/val_hidden_features_sub.png'.format(out_source_dpath))
+        fig.savefig('{}/val_hidden_features_sub.png'.format(out_fig_dpath))
         plt.close(fig)
 
         fig = plt.figure(figsize=(16*2, 9))
@@ -767,7 +615,7 @@ def val_TDAE(data_path='data/toy_data.hdf5'):
         for k in np.unique(Y2):
             ax.scatter(x=X1[Y2==k,0], y=X1[Y2==k,1], marker='.', alpha=0.5)
         ax.set_aspect('equal', 'datalim')
-        fig.savefig('{}/val_hidden_features_main.png'.format(out_source_dpath))
+        fig.savefig('{}/val_hidden_features_main.png'.format(out_fig_dpath))
         plt.close(fig)
 
 

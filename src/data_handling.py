@@ -20,29 +20,32 @@ def data_review():
                     f_out['img/{}/{}'.format(k, fname)].attrs['mayo'] = m-1
 
 
-def get_flatted_data(data_dpath):
+def get_flatted_data(data_dpath, trans=True):
     with h5py.File(data_dpath, 'r') as f:
         srcs = []
-        targets1, targets2 = [], []
+        targets1, targets2, targets3 = [], [], []
         for group_key in f.keys():
             for parent_key in f[group_key].keys():
                 parent_group = '{}/{}'.format(group_key, parent_key)
                 src = []
-                target1, target2 = [], []
+                target1, target2, target3 = [], [], []
                 for child_key in f[parent_group].keys():
                     child_group = '{}/{}'.format(parent_group, child_key)
                     src.append(f[child_group][()])
                     target1.append(f[child_group].attrs['part'])
                     target2.append(f[child_group].attrs['mayo'])
-                    if 'colon' in data_dpath:
-                        if target2[-1] > 1:
-                            target2[-1] = 1
-                        elif target2[-1] <= 1:
-                            target2[-1] = 0
+                    # target3.append(f[child_group].attrs['mayo'])
+                    if trans:
+                        if 'colon' in data_dpath:
+                            if target2[-1] > 1:
+                                target2[-1] = 1
+                            elif target2[-1] <= 1:
+                                target2[-1] = 0
         
                 srcs.extend(src)
                 targets1.extend(target1)
                 targets2.extend(target2)
+                targets3.extend(target3)
 
         srcs = np.asarray(srcs)
         if srcs.max() > 1:
@@ -51,9 +54,11 @@ def get_flatted_data(data_dpath):
         srcs = np.transpose(srcs, (0, 3, 1, 2))
         targets1 = np.asarray(targets1)
         targets2 = np.asarray(targets2)
+        # targets3 = np.asarray(targets3)
         srcs = torch.from_numpy(srcs).float()
         targets1 = torch.from_numpy(targets1).long()
         targets2 = torch.from_numpy(targets2).long()
+        # targets3 = torch.from_numpy(targets3).long()
         return srcs, targets1, targets2
 
 
