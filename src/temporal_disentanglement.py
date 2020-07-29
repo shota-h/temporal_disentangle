@@ -55,6 +55,7 @@ def argparses():
     parser.add_argument('--data', type=str, default='toy')
     parser.add_argument('--mode', type=str, default='all')
     parser.add_argument('--param', type=str, default='best')
+    parser.add_argument('--fill', type=str, default='hp')
     parser.add_argument('--ex', type=str, default=None)
     parser.add_argument('--classifier', type=float, default=1e-0)
     parser.add_argument('--rec', type=float, default=1e-0)
@@ -190,7 +191,7 @@ def train_TDAE(data_path='data/toy_data.hdf5'):
     criterion_classifier = nn.CrossEntropyLoss()
     criterion_triplet = TripletLoss(margin=args.margin)
     if args.fou:
-        criterion_reconst = Fourier_mse(img_h=img_h, img_w=img_w, mask=True, dm=args.dm)
+        criterion_reconst = Fourier_mse(img_h=img_h, img_w=img_w, mask=True, dm=args.dm, mode=args.fill)
     else:
         criterion_reconst = nn.MSELoss()
 
