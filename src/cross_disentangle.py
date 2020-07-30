@@ -89,19 +89,27 @@ def argparses():
     parser.add_argument('--mode', type=str, default='all')
     parser.add_argument('--param', type=str, default='best')
     parser.add_argument('--ex', type=str, default=None)
-    parser.add_argument('--classifier', type=float, default=1e-0)
+    parser.add_argument('--classifier1', type=float, default=1e-0)
+    parser.add_argument('--classifier2', type=float, default=1e-0)
     parser.add_argument('--rec', type=float, default=1e-0)
-    parser.add_argument('--adv', type=float, default=1e-1)
+    parser.add_argument('--adv1', type=float, default=1e-1)
+    parser.add_argument('--adv2', type=float, default=1e-1)
     parser.add_argument('--tri', type=float, default=1e-2)
     parser.add_argument('--triplet', action='store_true')
     parser.add_argument('--retrain', action='store_true')
-
+    parser.add_argument('--dm', type=int, default=0)
+    parser.add_argument('--fill', type=str, default='hp')
+    parser.add_argument('--fou', action='store_true')
     return parser.parse_args()
 
 
 def main(data_path='data/toy_data.hdf5'):
     args = argparses()
-    if 'toy_data' in data_path:
+    if 'freq' in data_path:
+        img_w = 256
+        img_h = 256
+        out_source_dpath = './reports/Cross_freq'
+    elif 'toy_data' in data_path:
         img_w = 256
         img_h = 256
         out_source_dpath = './reports/Cross_toy' 
@@ -153,7 +161,10 @@ def main(data_path='data/toy_data.hdf5'):
     val_loader = DataLoader(val_set, batch_size=128, shuffle=False)
 
     criterion_classifier = nn.CrossEntropyLoss()
-    criterion_reconst = nn.MSELoss()
+    if args.fou:
+        criterion_reconst = Fourier_mse(img_h=img_h, img_w=img_w, mask=True, dm=args.dm, mode=args.fill)
+    else:
+        criterion_reconst = nn.MSELoss()
     params = list(model.parameters())
     optimizer = optim.Adam(params)
     # optim_adv = optim.SGD(params, lr=0.001)
@@ -161,9 +172,11 @@ def main(data_path='data/toy_data.hdf5'):
     
     n_epochs = args.epoch
     best_loss = np.inf
-    l_adv = args.adv
+    l_adv1 = args.adv1
+    l_adv2 = args.adv2
     l_recon = args.rec
-    l_c = args.classifier
+    l_c1 = args.classifier1
+    l_c2 = args.classifier2
     best_epoch = 0
     for epoch in range(n_epochs):
         accs_p, acc_t = [], []
@@ -179,21 +192,21 @@ def main(data_path='data/toy_data.hdf5'):
             loss_reconst.backward(retain_graph=True)
             losses.append(loss_reconst)
 
-            loss_main_adv = l_adv * negative_entropy_loss(adv_preds_main.to(device))
+            loss_main_adv = l_adv1 * negative_entropy_loss(adv_preds_main.to(device))
             loss_main_adv.backward(retain_graph=True)
             model.classifier_main.zero_grad()
             losses.append(loss_main_adv)
             
-            loss_sub_adv = l_adv * negative_entropy_loss(adv_preds_sub.to(device))
+            loss_sub_adv = l_adv2 * negative_entropy_loss(adv_preds_sub.to(device))
             loss_sub_adv.backward(retain_graph=True)
             model.classifier_sub.zero_grad()
             losses.append(loss_sub_adv)
             
-            loss_classifier_main = l_c * criterion_classifier(preds_main.to(device), target.to(device))
+            loss_classifier_main = l_c1 * criterion_classifier(preds_main.to(device), target.to(device))
             loss_classifier_main.backward(retain_graph=True)
             losses.append(loss_classifier_main)
 
-            loss_classifier_sub = l_c * criterion_classifier(preds_sub.to(device), sub_target.to(device))
+            loss_classifier_sub = l_c2 * criterion_classifier(preds_sub.to(device), sub_target.to(device))
             loss_classifier_sub.backward(retain_graph=True)
             losses.append(loss_classifier_sub)
             loss = 0
@@ -246,10 +259,10 @@ def main(data_path='data/toy_data.hdf5'):
                 for in_data, target, sub_target in val_loader:
                     preds_main, preds_sub, adv_preds_main, adv_preds_sub, reconst = model(in_data.to(device))
                     loss_reconst = l_recon * criterion_reconst(reconst.to(device), in_data.to(device))
-                    loss_main_adv = l_adv * negative_entropy_loss(adv_preds_main.to(device))
-                    loss_sub_adv = l_adv * negative_entropy_loss(adv_preds_sub.to(device))
-                    loss_classifier_main = l_c * criterion_classifier(preds_main.to(device), target.to(device))
-                    loss_classifier_sub = l_c * criterion_classifier(preds_sub.to(device), sub_target.to(device))
+                    loss_main_adv = l_adv1 * negative_entropy_loss(adv_preds_main.to(device))
+                    loss_sub_adv = l_adv2 * negative_entropy_loss(adv_preds_sub.to(device))
+                    loss_classifier_main = l_c1 * criterion_classifier(preds_main.to(device), target.to(device))
+                    loss_classifier_sub = l_c2 * criterion_classifier(preds_sub.to(device), sub_target.to(device))
                     val_loss = loss_reconst + loss_classifier_main + loss_classifier_sub + loss_main_adv + loss_sub_adv
                     val_losses.append(val_loss.item())
                     val_main_loss.append(loss_classifier_main.item())
@@ -274,6 +287,12 @@ def main(data_path='data/toy_data.hdf5'):
 
                 writer.add_scalar('val loss',
                     np.mean(val_losses), epoch+1)
+                writer.add_scalar('val reconst loss',
+                    np.mean(val_rec_loss), epoch+1)
+                writer.add_scalar('val main loss',
+                    np.mean(val_main_loss), epoch+1)
+                writer.add_scalar('val sub loss',
+                    np.mean(val_sub_loss), epoch+1)
                 writer.add_scalar('val main acc',
                     Acc/len(val_set), epoch+1)
                 writer.add_scalar('val sub acc',
@@ -298,10 +317,14 @@ def main(data_path='data/toy_data.hdf5'):
 
 def validate(data_path='data/toy_data.hdf5'):
     args = argparses()
-    if 'toy_data' in data_path:
+    if 'freq' in data_path:
         img_w = 256
         img_h = 256
-        out_source_dpath = './reports/Cross_toy' 
+        out_source_dpath = './reports/Cross_freq' 
+    elif 'toy_data' in data_path:
+        img_w = 256
+        img_h = 256
+        out_source_dpath = './reports/Cross_toy'
     else:
         img_w = 224
         img_h = 224
@@ -323,7 +346,7 @@ def validate(data_path='data/toy_data.hdf5'):
     clean_directory(out_val_dpath)
     clean_directory(out_fig_dpath)
 
-    srcs, targets1, targets2 = get_triplet_flatted_data(data_path)
+    srcs, targets1, targets2 = get_triplet_flatted_data(data_path)    
     model = CrossDisentangleNet(n_class1=torch.unique(targets1).size(0), n_class2=torch.unique(targets2).size(0), img_h=img_h, img_w=img_w)
     if args.param == 'best':
         model.load_state_dict(torch.load('{}/test_bestparam.json'.format(out_param_dpath)))
@@ -479,6 +502,133 @@ def validate(data_path='data/toy_data.hdf5'):
         fig.savefig('{}/val_hidden_features_main.png'.format(out_fig_dpath))
         plt.close(fig)
 
+def test(data_path='data/toy_data.hdf5'):
+    args = argparses()
+    if 'freq' in data_path:
+        img_w = 256
+        img_h = 256
+        out_source_dpath = './reports/TDAE_freq'
+    elif 'toy_data' in data_path:
+        img_w = 256
+        img_h = 256
+        out_source_dpath = './reports/TDAE_toy'
+    else:
+        img_w = 224
+        img_h = 224
+        out_source_dpath = './reports/TDAE_colon' 
+    if args.ex is None:
+        pass
+    else:
+        out_source_dpath = out_source_dpath + '/' + args.ex
+    if args.retrain:
+        out_param_dpath = '{}/re_param'.format(out_source_dpath)
+        out_test_dpath = '{}/re_test_{}'.format(out_source_dpath, args.param)
+    else:
+        out_param_dpath = '{}/param'.format(out_source_dpath)
+        out_test_dpath = '{}/test_{}'.format(out_source_dpath, args.param)
+    clean_directory(out_test_dpath)
+
+    d2ae_flag = False
+    if args.rev:
+        srcs, targets2, targets1 = get_triplet_flatted_data(data_path)
+    else:
+        srcs, targets1, targets2 = get_triplet_flatted_data(data_path)
+    
+    model = CrossDisentangleNet(n_class1=torch.unique(targets1).size(0), n_class2=torch.unique(targets2).size(0), img_h=img_h, img_w=img_w)
+    # model = TDAE_out(n_class1=torch.unique(targets1).size(0), n_class2=torch.unique(targets2).size(0), d2ae_flag = d2ae_flag, img_h=img_h, img_w=img_w)
+    if args.param == 'best':
+        model.load_state_dict(torch.load('{}/TDAE_test_bestparam.json'.format(out_param_dpath)))
+    else:
+        model.load_state_dict(torch.load('{}/TDAE_test_param.json'.format(out_param_dpath)))
+    model = model.to(device)
+
+    data_pairs = torch.utils.data.TensorDataset(srcs[0], targets1, targets2)
+    ratio = [0.7, 0.2, 0.1]
+    n_sample = len(data_pairs)
+    train_size = int(n_sample*ratio[0])
+    val_size = int(n_sample*ratio[1])
+    test_size = n_sample - train_size - val_size
+    
+    # train_set, val_set = torch.utils.data.random_split(data_pairs, [train_size, val_size])
+    train_indices = list(range(0, train_size))
+    val_indices = list(range(train_size, train_size+val_size))
+    test_indices = list(range(train_size+val_size, n_sample))
+
+    train_set = torch.utils.data.dataset.Subset(data_pairs, train_indices)
+    train_loader = DataLoader(train_set, batch_size=32, shuffle=False)
+    val_set = torch.utils.data.dataset.Subset(data_pairs, val_indices)
+    val_loader = DataLoader(val_set, batch_size=32, shuffle=False)
+    test_set = torch.utils.data.dataset.Subset(data_pairs, test_indices)
+    test_loader = DataLoader(test_set, batch_size=32, shuffle=False)
+
+    with torch.no_grad():
+        model.eval()
+        X1, X2, Y1, Y2 = [], [], [], []
+        for loader in [train_loader, val_loader, test_loader]:
+            X_train1, X_train2, Y_train1, Y_train2 = [], [], [], []
+            for n_iter, (inputs, targets1, targets2) in enumerate(loader):
+                (h0, t0) = model.hidden_output(inputs.to(device))
+                h0 = h0.detach().to('cpu').numpy()
+                t0 = t0.detach().to('cpu').numpy()
+                X_train1.extend(h0)
+                X_train2.extend(t0)
+                Y_train1.extend(targets1.detach().to('cpu').numpy())
+                Y_train2.extend(targets2.detach().to('cpu').numpy())
+    
+            X_train1 = np.asarray(X_train1)
+            X1.append(X_train1)
+            X_train2 = np.asarray(X_train2)
+            X2.append(X_train2)
+            Y_train1 = np.asarray(Y_train1)
+            Y1.append(Y_train1)
+            Y_train2 = np.asarray(Y_train2)
+            Y2.append(Y_train2)
+        
+        logreg = LogisticRegression(penalty='l2', solver="sag")
+        linear_svc = LinearSVC()
+
+        logreg.fit(X1[0], Y1[0])
+        # linear_svc.fit(X1[0], Y1[0])
+        l = logreg.predict_proba(X1[1])
+        plt.hist(np.max(l, axis=1), np.arange(0, 1.01, 0.01))
+        plt.ylim([0, 100])
+        plt.savefig('./test.png')
+        plt.close()
+
+        logreg.fit(X2[0], Y1[0])
+        # linear_svc.fit(X2[0], Y1[0])
+        l = logreg.predict_proba(X2[1])
+        plt.hist(np.max(l, axis=1), np.arange(0, 1.01, 0.01))
+        plt.ylim([0, 100])
+        plt.savefig('./test_1.png')
+        plt.close()
+
+        logreg.fit(X1[0], Y2[0])
+        # linear_svc.fit(X1[0], Y2[0])
+        l = logreg.predict_proba(X1[1])
+        plt.hist(np.max(l, axis=1), np.arange(0, 1.01, 0.01))
+        plt.ylim([0, 100])
+        plt.savefig('./test_tub1.png')
+        plt.close()
+
+        logreg.fit(X2[0], Y2[0])
+        # linear_svc.fit(X2[0], Y1[0])
+        score_reg = logreg.score(X2[0], Y2[0])
+        print('train-------------------------------')
+        print(score_reg)
+        print('-------------------------------')
+
+        score_reg = logreg.score(X2[1], Y2[1])
+        print('val-------------------------------')
+        print(score_reg)
+        print('-------------------------------')
+        l = logreg.predict_proba(X2[1])
+        plt.hist(np.max(l, axis=1), np.arange(0, 1.01, 0.01))
+        plt.ylim([0, 100])
+        plt.savefig('./test_tub2.png')
+        plt.close()
+        return
+
     
 if __name__ == '__main__':
     # if os.path.exists('./data/colon_renew.hdf5') is False:
@@ -489,15 +639,32 @@ if __name__ == '__main__':
             main()
         elif args.mode == 'val':
             validate()
+        elif args.mode == 'test':
+            test()
         else:
             main()
             validate()
+
+    elif args.data == 'freq':
+        d = './data/toy_data_freq_shape.hdf5'
+        if args.mode == 'train':
+            main(d)
+        elif args.mode == 'val':
+            validate(d)
+        elif args.mode == 'test':
+            test(d)
+        else:
+            main(d)
+            validate(d)
+
     elif args.data == 'colon':
         d = './data/colon_renew.hdf5'
         if args.mode == 'train':
             main(d)
         elif args.mode == 'val':
             validate(d)
+        elif args.mode == 'test':
+            test(d)
         else:
             main(d)
             validate(d)

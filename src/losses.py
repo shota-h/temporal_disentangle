@@ -8,19 +8,13 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 class Fourier_mse(nn.Module):
     def __init__(self, img_w, img_h, mask=False, dm=0, sep=False, mode='hp'):
         super(Fourier_mse, self).__init__()
+        self.mask = torch.ones((1, img_w, img_h, 2))
         if mask:
-            if mode == 'hp':
-                mv = 0
-                self.mask = torch.ones((1, img_w, img_h, 2))
-            if mode == 'lp':
-                mv = 1
-                self.mask = torch.zeros((1, img_w, img_h, 2))
             for u, v in itertools.product(np.arange(-dm, dm), np.arange(-dm, dm)):
                 if np.abs(u) + np.abs(v):
-                    self.mask[0, img_h//2+u, img_w//2+v, :] = mv
-            # self.mask = 1 - self.mask
-        else:
-            self.mask = torch.ones((1, img_w, img_h, 2))
+                    self.mask[0, img_h//2+u, img_w//2+v, :] = 0
+            if mode == 'lp':
+                self.mask = 1 - self.mask
         self.sep = sep
 
     def forward(self, inputs, targets):
