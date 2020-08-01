@@ -103,30 +103,30 @@ def argparses():
     return parser.parse_args()
 
 
-def main(data_path='data/toy_data.hdf5'):
+def main():
     args = argparses()
-    if 'freq' in data_path:
-        img_w = 256
-        img_h = 256
+    if 'freq' in args.data:
+        img_w, img_h = 256, 256
         out_source_dpath = './reports/Cross_freq'
-    elif 'toy_data' in data_path:
-        img_w = 256
-        img_h = 256
+        data_path = './data/toy_data_freq_shape.hdf5'
+    elif 'toy_data' in args.data:
+        img_w, img_h = 256, 256
         out_source_dpath = './reports/Cross_toy' 
-    else:
-        img_w = 224
-        img_h = 224
+        data_path = './data/toy_data.hdf5'
+    elif 'colon' in args.data:
+        img_w, img_h = 224, 224
         out_source_dpath = './reports/Cross_colon' 
-
+        data_path = './data/colon_renew.hdf5'
+    else:
+        return
     if args.ex is None:
         pass
     else:
         out_source_dpath = out_source_dpath + '/' + args.ex
 
-    d2ae_flag = False
     srcs, targets1, targets2 = get_flatted_data(data_path)
     data_pairs = torch.utils.data.TensorDataset(srcs, targets1, targets2)
-    model = CrossDisentangleNet(n_class1=torch.unique(targets1).size(0), n_class2=torch.unique(targets2).size(0), img_h=img_h, img_w=img_w)
+    model = CrossDisentangleNet(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w)
 
     if args.retrain:
         model.load_state_dict(torch.load('{}/param/test_param.json'.format(out_source_dpath)))
@@ -317,19 +317,20 @@ def main(data_path='data/toy_data.hdf5'):
 
 def validate(data_path='data/toy_data.hdf5'):
     args = argparses()
-    if 'freq' in data_path:
-        img_w = 256
-        img_h = 256
+    if 'freq' in args.data:
+        img_w, img_h = 256, 256
         out_source_dpath = './reports/Cross_freq' 
-    elif 'toy_data' in data_path:
-        img_w = 256
-        img_h = 256
+        data_path = './data/toy_data_freq_shape.hdf5'
+    elif 'toy_data' in args.data:
+        img_w, img_h = 256, 256
         out_source_dpath = './reports/Cross_toy'
+        data_path = './data/toy_data.hdf5'
+    elif 'colon' in args.data:
+        img_w, img_h = 224, 224
+        out_source_dpath = './reports/Cross_colon'
+        data_path = './data/colon_renew.hdf5'
     else:
-        img_w = 224
-        img_h = 224
-        out_source_dpath = './reports/Cross_colon' 
-
+        return
     if args.ex is None:
         pass
     else:
@@ -347,7 +348,7 @@ def validate(data_path='data/toy_data.hdf5'):
     clean_directory(out_fig_dpath)
 
     srcs, targets1, targets2 = get_triplet_flatted_data(data_path)    
-    model = CrossDisentangleNet(n_class1=torch.unique(targets1).size(0), n_class2=torch.unique(targets2).size(0), img_h=img_h, img_w=img_w)
+    model = CrossDisentangleNet(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w)
     if args.param == 'best':
         model.load_state_dict(torch.load('{}/test_bestparam.json'.format(out_param_dpath)))
     else:
@@ -502,24 +503,28 @@ def validate(data_path='data/toy_data.hdf5'):
         fig.savefig('{}/val_hidden_features_main.png'.format(out_fig_dpath))
         plt.close(fig)
 
-def test(data_path='data/toy_data.hdf5'):
+def test():
     args = argparses()
-    if 'freq' in data_path:
-        img_w = 256
-        img_h = 256
+    if 'freq' in args.data:
+        img_w, img_h = 256, 256
         out_source_dpath = './reports/TDAE_freq'
-    elif 'toy_data' in data_path:
-        img_w = 256
-        img_h = 256
+        data_path = './data/toy_data_freq_shape.hdf5'
+    elif 'toy_data' in args.data:
+        img_w, img_h = 256, 256
         out_source_dpath = './reports/TDAE_toy'
-    else:
-        img_w = 224
-        img_h = 224
+        data_path = './data/toy_data.hdf5'
+    elif 'toy_data' in args.data:
+        img_w, img_h = 224, 224
         out_source_dpath = './reports/TDAE_colon' 
+        data_path = './data/colon_renew.hdf5'
+    else:
+        return
+
     if args.ex is None:
         pass
     else:
         out_source_dpath = out_source_dpath + '/' + args.ex
+        
     if args.retrain:
         out_param_dpath = '{}/re_param'.format(out_source_dpath)
         out_test_dpath = '{}/re_test_{}'.format(out_source_dpath, args.param)
@@ -528,14 +533,12 @@ def test(data_path='data/toy_data.hdf5'):
         out_test_dpath = '{}/test_{}'.format(out_source_dpath, args.param)
     clean_directory(out_test_dpath)
 
-    d2ae_flag = False
     if args.rev:
         srcs, targets2, targets1 = get_triplet_flatted_data(data_path)
     else:
         srcs, targets1, targets2 = get_triplet_flatted_data(data_path)
     
-    model = CrossDisentangleNet(n_class1=torch.unique(targets1).size(0), n_class2=torch.unique(targets2).size(0), img_h=img_h, img_w=img_w)
-    # model = TDAE_out(n_class1=torch.unique(targets1).size(0), n_class2=torch.unique(targets2).size(0), d2ae_flag = d2ae_flag, img_h=img_h, img_w=img_w)
+    model = CrossDisentangleNet(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w)
     if args.param == 'best':
         model.load_state_dict(torch.load('{}/TDAE_test_bestparam.json'.format(out_param_dpath)))
     else:
@@ -634,39 +637,13 @@ if __name__ == '__main__':
     # if os.path.exists('./data/colon_renew.hdf5') is False:
     #     data_review()
     args = argparses()
-    if args.data == 'toy':
-        if args.mode == 'train':
-            main()
-        elif args.mode == 'val':
-            validate()
-        elif args.mode == 'test':
-            test()
-        else:
-            main()
-            validate()
-
-    elif args.data == 'freq':
-        d = './data/toy_data_freq_shape.hdf5'
-        if args.mode == 'train':
-            main(d)
-        elif args.mode == 'val':
-            validate(d)
-        elif args.mode == 'test':
-            test(d)
-        else:
-            main(d)
-            validate(d)
-
-    elif args.data == 'colon':
-        d = './data/colon_renew.hdf5'
-        if args.mode == 'train':
-            main(d)
-        elif args.mode == 'val':
-            validate(d)
-        elif args.mode == 'test':
-            test(d)
-        else:
-            main(d)
-            validate(d)
+    if args.mode == 'train':
+        main()
+    elif args.mode == 'val':
+        validate()
+    elif args.mode == 'test':
+        test()
     else:
-        print(args)
+        main()
+        validate()
+    print(args)

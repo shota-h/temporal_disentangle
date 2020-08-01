@@ -68,7 +68,7 @@ def argparses():
     parser.add_argument('--fou', action='store_true')
     parser.add_argument('--rev', action='store_true')
     return parser.parse_args()
-    
+
 
 class PairwiseSampler(Dataset):
     def __init__(self, X, u):
@@ -130,7 +130,7 @@ def train_TDAE_v2():
     else:
         srcs, targets1, targets2 = get_triplet_flatted_data(data_path)
     
-    model = TDAE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=2,)
+    model = TDAE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=2)
     if args.dlim > 0:
         data_pairs = torch.utils.data.TensorDataset(srcs[0][:args.dlim], srcs[1][:args.dlim], srcs[2][:args.dlim], targets1[:args.dlim], targets2[:args.dlim])
     else:
@@ -151,8 +151,8 @@ def train_TDAE_v2():
     clean_directory(out_board_dpath)
     clean_directory(out_condition_dpath)
     writer = tbx.SummaryWriter(out_board_dpath)
-
     model = model.to(device)
+    
     ratio = [0.7, 0.2, 0.1]
     n_sample = len(data_pairs)
     train_size = int(n_sample*ratio[0])
@@ -182,8 +182,6 @@ def train_TDAE_v2():
 
     params = list(model.parameters())
     # optim_adv = optim.Adam(params_adv, lr=1e-4)
-    params_adv = list(model.classifier_sub.parameters())
-    optim_adv = optim.Adam(params_adv)
     optimizer = optim.Adam(params)
     # optimizer = optim.SGD(params, lr=0.001)
     # scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
@@ -250,7 +248,7 @@ def train_TDAE_v2():
                 
                 loss_adv = l_adv * negative_entropy_loss(preds_adv.to(device))
                 loss_adv.backward(retain_graph=True)
-                model.classifier_main.zero_grad()
+                model.classifiers[0].zero_grad()
                 losses.append(loss_adv)
                 
                 loss_classifier_main = l_c * criterion_classifier(preds.to(device), target.to(device))

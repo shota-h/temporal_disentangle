@@ -1,3 +1,4 @@
+import itertools
 import torch
 from torch.nn.modules import activation
 from torch import nn, optim
@@ -365,6 +366,7 @@ class TDAE_out(nn.Module):
         p0 = torch.reshape(p0, (p0.size(0), -1))
         t0 = self.subnet_t1(t0)
         p0 = self.subnet_p1(p0)
+
         p0_no_grad = p0.clone().detach()
         class_main_preds = self.classifier_main(t0)
         class_sub_preds = self.classifier_sub(p0)
@@ -442,178 +444,117 @@ class TDAE_out(nn.Module):
 
 
 class CrossDisentangleNet(nn.Module):
-    def __init__(self, n_class1=3, n_class2=2, ksize=3, img_w=256, img_h=256, channels=[16, 32, 64, 128]):
+    def __init__(self, n_classes, ksize=3, img_w=256, img_h=256, channels=[3, 16, 32, 64, 128], latent_dim=256):
         super().__init__()
         self.img_h, self.img_w = img_h, img_w
+        self.latent_dim = latent_dim
+        self.channels = channels
 
-        self.conv1 = base_conv(3, channels[0], ksize)
-        self.conv2 = base_conv(channels[0], channels[1], ksize)
-        self.conv3 = base_conv(channels[1], channels[2], ksize)
-        self.conv4 = base_conv(channels[2], channels[3], ksize)
-        self.conv5 = base_conv(channels[3], channels[3], ksize)
+        enc_layers = []
+        for i in range(len(channels)-1):
+            enc_layers.append(base_conv(channels[i], channels[i+1], ksize))
+        enc_layers.append(base_conv(channels[-1], channels[-1], ksize))
+        self.enc = nn.Sequential(*enc_layers)
 
-        self.subnet_conv_t1 = base_conv(channels[3], channels[3], ksize, stride=1)
-        self.subnet_conv_t2 = base_conv(channels[3], channels[2], ksize, stride=1)
-        self.subnet_conv_p1 = base_conv(channels[3], channels[3], ksize, stride=1)
-        self.subnet_conv_p2 = base_conv(channels[3], channels[2], ksize, stride=1)
-
-        # self.conv1 = nn.Sequential(nn.Conv2d(3, 16, ksize, stride=2, padding=(ksize-1)//2),
-        #                             nn.BatchNorm2d(16),
-        #                             nn.ReLU())
-        # self.conv2 = nn.Sequential(nn.Conv2d(16, 32, ksize, stride=2, padding=(ksize-1)//2),
-        #                             nn.BatchNorm2d(32),
-        #                             nn.ReLU())
-        # self.conv3 = nn.Sequential(nn.Conv2d(32, 64, ksize, stride=2, padding=(ksize-1)//2),
-        #                             nn.BatchNorm2d(64),
-        #                             nn.ReLU())
-        # self.conv4 = nn.Sequential(nn.Conv2d(64, 128, ksize, stride=2, padding=(ksize-1)//2),
-        #                             nn.BatchNorm2d(128),
-        #                             nn.ReLU())
-        # self.conv5 = nn.Sequential(nn.Conv2d(128, 128, ksize, stride=2, padding=(ksize-1)//2),
-        #                             nn.BatchNorm2d(128),
-        #                             nn.ReLU())
-
-        self.enc = nn.Sequential(self.conv1, self.conv2, self.conv3, self.conv4, self.conv5)
-        # self.subnet_conv_t1 = nn.Sequential(nn.Conv2d(128, 128, ksize, padding=(ksize-1)//2),
-        #                             nn.BatchNorm2d(128),
-        #                             nn.ReLU())
-        # self.subnet_conv_t2 = nn.Sequential(nn.Conv2d(128, 64, ksize, padding=(ksize-1)//2),
-        #                             nn.BatchNorm2d(64),
-        #                             nn.ReLU())
-        self.subnet_t1 = nn.Sequential(nn.Linear(in_features=64, out_features=256),
-                                    nn.ReLU())
-
-        # self.subnet_conv_p1 = nn.Sequential(nn.Conv2d(128, 128, ksize, padding=(ksize-1)//2),
-        #                             nn.BatchNorm2d(128),
-        #                             nn.ReLU())
-        # self.subnet_conv_p2 = nn.Sequential(nn.Conv2d(128, 64, ksize, padding=(ksize-1)//2),
-        #                             nn.BatchNorm2d(64),
-        #                             nn.ReLU())
-        self.subnet_p1 = nn.Sequential(nn.Linear(in_features=64, out_features=256),
-                                    nn.ReLU())
-
-        self.subnets_t = nn.Sequential(self.subnet_conv_t1,
-                                        self.subnet_conv_t2,
-                                        nn.AvgPool2d(kernel_size=img_h//(2**5)),
-                                        Flatten(),
-                                        self.subnet_t1)
-
-        self.subnets_p = nn.Sequential(self.subnet_conv_p1,
-                                        self.subnet_conv_p2,
-                                        nn.AvgPool2d(kernel_size=img_h//(2**5)),
-                                        Flatten(),
-                                        self.subnet_p1)
-
-        self.classifier_main = nn.Linear(in_features=256, out_features=n_class1)
-        self.classifier_sub = nn.Linear(in_features=256, out_features=n_class2)
+        subnets = []
+        classifiers = []
+        for c in n_classes:        
+            subnets.append(self.get_subnet(channel=channels[-1], ksize=ksize, nconv=2))
+            classifiers.append(nn.Linear(in_features=latent_dim, out_features=c))
+        
+        self.subnets = nn.ModuleList(subnets)
+        self.classifiers = nn.ModuleList(classifiers)
 
 
-        self.dec_fc1 = nn.Sequential(nn.Linear(in_features=256*2, 
-                                                out_features=(self.img_w//(2**5))*(self.img_h//(2**5))*64),
+        self.dec_fc1 = nn.Sequential(nn.Linear(in_features=latent_dim*len(n_classes), 
+                                                out_features=(self.img_w//(2**5))*(self.img_h//(2**5))*channels[4]),
                                                 nn.ReLU())
         
-        self.deconv1 = base_deconv(channels[2], channels[3])
-        self.deconv2 = base_deconv(channels[3], channels[2])
-        self.deconv3 = base_deconv(channels[2], channels[1])
-        self.deconv4 = base_deconv(channels[1], channels[0])
-        self.deconv1_conv1 = base_conv(channels[3], channels[3], ksize, stride=1)
-        self.deconv1_conv2 = base_conv(channels[3], channels[3], ksize, stride=1)
-        self.deconv2_conv1 = base_conv(channels[2], channels[2], ksize, stride=1)
-        self.deconv2_conv2 = base_conv(channels[2], channels[2], ksize, stride=1)
-        self.deconv3_conv1 = base_conv(channels[1], channels[1], ksize, stride=1)
-        self.deconv3_conv2 = base_conv(channels[1], channels[1], ksize, stride=1)
-        self.deconv4_conv1 = base_conv(channels[0], channels[0], ksize, stride=1)
-        self.deconv4_conv2 = base_conv(channels[0], channels[0], ksize, stride=1)
-
-        # self.deconv1 = nn.Sequential(nn.ConvTranspose2d(64, 128, 2, stride=2),
-        #                             nn.BatchNorm2d(128),
-        #                             nn.ReLU())
-        # self.deconv1_conv1 = nn.Sequential(nn.Conv2d(128, 128, ksize, padding=(ksize-1)//2),
-        #                             nn.BatchNorm2d(128),
-        #                             nn.ReLU())
-        # self.deconv2 = nn.Sequential(nn.ConvTranspose2d(128, 64, 2, stride=2),
-        #                             nn.BatchNorm2d(64),
-        #                             nn.ReLU())
-        # self.deconv2_conv1 = nn.Sequential(nn.Conv2d(64, 64, ksize, padding=(ksize-1)//2),
-        #                             nn.BatchNorm2d(64),
-        #                             nn.ReLU())
-        # self.deconv3 = nn.Sequential(nn.ConvTranspose2d(64, 32, 2, stride=2),
-        #                             nn.BatchNorm2d(32),
-        #                             nn.ReLU())
-        # self.deconv3_conv1 = nn.Sequential(nn.Conv2d(32, 32, ksize, padding=(ksize-1)//2),
-        #                             nn.BatchNorm2d(32),
-        #                             nn.ReLU())
-        # self.deconv4 = nn.Sequential(nn.ConvTranspose2d(32, 16, 2, stride=2),
-        #                             nn.BatchNorm2d(16),
-        #                             nn.ReLU())
-        # self.deconv4_conv1 = nn.Sequential(nn.Conv2d(16, 16, ksize, padding=(ksize-1)//2),
-        #                             nn.BatchNorm2d(16),
-        #                             nn.ReLU())
-        self.deconv5 = nn.Sequential(nn.ConvTranspose2d(16, 3, 2, stride=2),
-                                nn.Sigmoid())
-        # self.dec = nn.Sequential(self.deconv1, self.deconv1_conv1,
-        #                         self.deconv2, self.deconv2_conv1,
-        #                         self.deconv3, self.deconv3_conv1,
-        #                         self.deconv4, self.deconv4_conv1,
-        #                         self.deconv5)
-
-        self.dec = nn.Sequential(self.deconv1, self.deconv1_conv1, self.deconv1_conv2,
-                        self.deconv2, self.deconv2_conv1, self.deconv2_conv2,
-                        self.deconv3, self.deconv3_conv1, self.deconv3_conv2,
-                        self.deconv4, self.deconv4_conv1, self.deconv4_conv2,
-                        self.deconv5)
-
+        dec_layers = [base_deconv(channels[4], channels[4])]
+        dec_layers.append(base_conv(channels[4], channels[4], ksize, stride=1))
+        dec_layers.append(base_conv(channels[4], channels[4], ksize, stride=1))
+        for in_c, out_c in zip(channels[::-1][:-1], channels[::-1][1:]):
+            if out_c == channels[0]:
+                dec_layers.append(nn.ConvTranspose2d(in_c, out_c, 2, stride=2))
+                dec_layers.append(nn.Sigmoid())
+                break
+            dec_layers.append(base_deconv(in_c, out_c))
+            for i in range(n_decov):
+                dec_layers.append(base_conv(out_c, out_c, ksize, stride=1))
+        
+        self.dec = nn.Sequential(*dec_layers)
         initialize_weights(self)
 
     def forward(self, input):
         h0 = self.enc(input)
-        t0 = self.subnets_t(h0)
-        p0 = self.subnets_p(h0)
-        preds_main = self.classifier_main(t0)
-        preds_sub = self.classifier_sub(p0)
-        adv_preds_main = self.classifier_main(p0)
-        adv_preds_sub = self.classifier_sub(t0)
-        concat_h0 = torch.cat((t0, p0), dim=1)
+        output_subnets = []
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
+
+        classifier_preds = []
+        for i, ii in itertools.product(range(len(self.classifiers)), range(len(output_subnets))):
+            classifier_preds.append(self.classifiers[i](output_subnets[ii]))
+
+        concat_h0 = torch.cat(output_subnets, dim=1)
         concat_h0 = self.dec_fc1(concat_h0)
-        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), self.channels[2], self.img_h//(2**5), self.img_w//(2**5)))
+        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), self.channels[-1], self.img_h//(2**5), self.img_w//(2**5)))
         rec = self.dec(concat_h0)
-        return preds_main, preds_sub, adv_preds_main, adv_preds_sub, rec
+        return classifier_preds[0], classifier_preds[3], classifier_preds[1], classifier_preds[2], rec
 
     def predict_label(self, input):
         h0 = self.enc(input)
-        t0 = self.subnets_t(h0)
-        p0 = self.subnets_p(h0)
-        class_main_preds = self.classifier_main(t0)
-        class_main_preds_adv = self.classifier_main(p0)
-        class_sub_preds = self.classifier_sub(p0)
-        class_sub_preds_adv = self.classifier_sub(t0)
-        return torch.max(class_main_preds, 1), torch.max(class_sub_preds, 1), torch.max(class_main_preds_adv, 1), torch.max(class_sub_preds_adv, 1)
+        output_subnets = []
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
+
+        classifier_preds = []
+        for i, ii in itertools.product(range(len(self.classifiers)), range(len(output_subnets))):
+            classifier_preds.append(self.classifiers[i](output_subnets[ii]))
+
+        return torch.max(classifier_preds[0], 1), torch.max(classifier_preds[3], 1), torch.max(classifier_preds[1], 1), torch.max(classifier_preds[2], 1)
 
     def hidden_output(self, input):
         h0 = self.enc(input)
-        t0 = self.subnets_t(h0)
-        p0 = self.subnets_p(h0)
-        return t0, p0
+        output_subnets = []
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
+        return output_subnets
 
     def reconst(self, input):
         h0 = self.enc(input)
-        t0 = self.subnets_t(h0)
-        p0 = self.subnets_p(h0)
-        concat_h0 = torch.cat((t0, p0), dim=1)
+        output_subnets = []
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
+        concat_h0 = torch.cat(output_subnets, dim=1)
         concat_h0 = self.dec_fc1(concat_h0)
-        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), channels[2], self.img_h//(2**5), self.img_w//(2**5)))
+        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), self.channels[-1], self.img_h//(2**5), self.img_w//(2**5)))
         rec = self.dec(concat_h0)
         return rec
 
-    def shuffle_reconst(self, input, idx1, idx2):
+    def shuffle_reconst(self, input, idx1, idx2, shuffle_idx):
         h0 = self.enc(input)
-        t0 = self.subnets_t(h0)
-        p0 = self.subnets_p(h0)
-        concat_h0 = torch.cat((t0[idx1], p0[idx2]), dim=1)
+        output_subnets = []
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
+
+        output_subnets = [output_subnets[s] for s in shuffle_idx]
+        for i, (ii, idx) in enumerate(zip(range(len(output_subnets)), [idx1, idx2])):
+            output_subnets[i] = output_subnets[ii][idx]
+        concat_h0 = torch.cat(output_subnets, dim=1)
         concat_h0 = self.dec_fc1(concat_h0)
-        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), channels[2], self.img_h//(2**5), self.img_w//(2**5)))
+        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), self.channels[-1], self.img_h//(2**5), self.img_w//(2**5)))
         rec = self.dec(concat_h0)
         return rec
+    
+    def get_subnet(self, channel, ksize, nconv):
+        subnet_layers = []
+        for i in range(nconv):
+            subnet_layers.append(base_conv(channel, channel, ksize, stride=1))
+        subnet_layers.append(nn.AvgPool2d(kernel_size=self.img_w//(2**5)))
+        subnet_layers.append(Flatten())
+        subnet_layers.append(nn.Linear(in_features=channel, out_features=self.latent_dim))
+        subnet_layers.append(nn.ReLU())
+        return nn.Sequential(*subnet_layers)
 
 
 class TDAE(nn.Module):
@@ -628,13 +569,15 @@ class TDAE(nn.Module):
         for i in range(len(channels)-1):
             enc_layers.append(base_conv(channels[i], channels[i+1], ksize))
         enc_layers.append(base_conv(channels[-1], channels[-1], ksize))
-
         self.enc = nn.Sequential(*enc_layers)
-        self.subnets = []
-        self.classifiers = []
+
+        subnets = []
+        classifiers = []
         for c in n_classes:        
-            self.subnets.append(self.get_subnet(channel=channels[-1], ksize=ksize, nconv=2))
-            self.classifiers.append(nn.Linear(in_features=latent_dim, out_features=c))
+            subnets.append(self.get_subnet(channel=channels[-1], ksize=ksize, nconv=2))
+            classifiers.append(nn.Linear(in_features=latent_dim, out_features=c))
+        self.subnets = nn.ModuleList(subnets)
+        self.classifiers = nn.ModuleList(classifiers)
 
         self.dec_fc1 = nn.Sequential(nn.Linear(in_features=latent_dim*len(n_classes), 
                                     out_features=(self.img_w//(2**5))*(self.img_h//(2**5))*channels[-1]),
@@ -647,23 +590,23 @@ class TDAE(nn.Module):
             if out_c == channels[0]:
                 dec_layers.append(nn.ConvTranspose2d(in_c, out_c, 2, stride=2))
                 dec_layers.append(nn.Sigmoid())
+                break
             dec_layers.append(base_deconv(in_c, out_c))
             for i in range(n_decov):
                 dec_layers.append(base_conv(out_c, out_c, ksize, stride=1))
         
         self.dec = nn.Sequential(*dec_layers)
-        
         initialize_weights(self)
 
     def forward(self, input):
         h0 = self.enc(input)
         output_subnets = []
-        for subnet in self.subnets:
-            output_subnets.append(subnet(h0))
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
 
         classifier_preds = []
-        for classifier, output_subnet in itertools.product(self.classifiers, output_subnets):
-            classifier_preds.append(classifier(output_subnet))
+        for i, ii in itertools.product(range(len(self.classifiers)), range(len(output_subnets))):
+            classifier_preds.append(self.classifiers[i](output_subnets[ii]))
 
         concat_h0 = torch.cat(output_subnets, dim=1)
         concat_h0 = self.dec_fc1(concat_h0)
@@ -673,50 +616,58 @@ class TDAE(nn.Module):
 
     def predict_label(self, input):
         h0 = self.enc(input)
-        t0 = self.subnets_t(h0)
-        p0 = self.subnets_p(h0)
-        class_main_preds = self.classifier_main(t0)
-        class_main_preds_adv = self.classifier_main(p0)
-        return torch.max(class_main_preds, 1), torch.max(class_main_preds_adv, 1)
+        output_subnets = []
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
+
+        classifier_preds = []
+        for i, ii in itertools.product(range(len(self.classifiers)), range(len(output_subnets))):
+            classifier_preds.append(self.classifiers[i](output_subnets[ii]))
+        
+        return torch.max(classifier_preds[0], 1), torch.max(classifier_preds[1], 1)
 
     def hidden_output(self, input):
         h0 = self.enc(input)
         output_subnets = []
-        for subnet in self.subnets:
-            output_subnets.append(subnet(h0))
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
         return output_subnets
 
     def reconst(self, input):
         h0 = self.enc(input)
         output_subnets = []
-        for subnet in self.subnets:
-            output_subnets.append(subnet(h0))
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
+        
         concat_h0 = torch.cat(output_subnets, dim=1)
         concat_h0 = self.dec_fc1(concat_h0)
-        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), channels[-1], self.img_h//(2**5), self.img_w//(2**5)))
+        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), self.channels[-1], self.img_h//(2**5), self.img_w//(2**5)))
         rec = self.dec(concat_h0)
         return rec
 
-    def shuffle_reconst(self, input, idx1, idx2, shuffle_idx):
+    def shuffle_reconst(self, input, idx1, idx2, shuffle_idx=[1, 0]):
         h0 = self.enc(input)
         output_subnets = []
-        for subnet in self.subnets:
-            output_subnets.append(subnet(h0))
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
+
         output_subnets = [output_subnets[s] for s in shuffle_idx]
-        for i, (output_subnet, idx) in enumerate(zip(output_subnets, [idx1, idx2])):
-            output_subnets[i] = output_subnet[idx]
+
+        for i, (ii, idx) in enumerate(zip(range(len(output_subnets)), [idx1, idx2])):
+            output_subnets[i] = output_subnets[ii][idx]
+
         concat_h0 = torch.cat(output_subnets, dim=1)
         concat_h0 = self.dec_fc1(concat_h0)
-        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), channels[-1], self.img_h//(2**5), self.img_w//(2**5)))
+        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), self.channels[-1], self.img_h//(2**5), self.img_w//(2**5)))
         rec = self.dec(concat_h0)
         return rec
 
     def get_subnet(self, channel, ksize, nconv):
         subnet_layers = []
         for i in range(nconv):
-            subnet_layer.append(base_conv(channel, channel, ksize, stride=1))
+            subnet_layers.append(base_conv(channel, channel, ksize, stride=1))
         subnet_layers.append(nn.AvgPool2d(kernel_size=self.img_w//(2**5)))
         subnet_layers.append(Flatten())
-        subnet_layers.append(nn.Linear(in_features=channels, out_features=self.latent_dim))
+        subnet_layers.append(nn.Linear(in_features=channel, out_features=self.latent_dim))
         subnet_layers.append(nn.ReLU())
         return nn.Sequential(*subnet_layers)
