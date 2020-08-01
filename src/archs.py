@@ -444,7 +444,7 @@ class TDAE_out(nn.Module):
 
 
 class CrossDisentangleNet(nn.Module):
-    def __init__(self, n_classes, ksize=3, img_w=256, img_h=256, channels=[3, 16, 32, 64, 128], latent_dim=256):
+    def __init__(self, n_classes, ksize=3, img_w=256, img_h=256, channels=[3, 16, 32, 64, 128], latent_dim=256, n_decov=2):
         super().__init__()
         self.img_h, self.img_w = img_h, img_w
         self.latent_dim = latent_dim
