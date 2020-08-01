@@ -10,9 +10,14 @@ class Fourier_mse(nn.Module):
         super(Fourier_mse, self).__init__()
         self.mask = torch.ones((1, img_w, img_h, 2))
         if mask:
-            for u, v in itertools.product(np.arange(-dm, dm), np.arange(-dm, dm)):
-                if np.abs(u) + np.abs(v):
-                    self.mask[0, img_h//2+u, img_w//2+v, :] = 0
+            # for u, v in itertools.product(np.arange(-dm, dm), np.arange(-dm, dm)):
+            #     # if np.abs(u) + np.abs(v):
+                #    self.mask[0, img_h//2+u, img_w//2+v, :] = 0
+            self.mask[:, :dm, :dm, :] = 0
+            self.mask[:, -dm:, :dm, :] = 0
+            self.mask[:, dm:, -dm:, :] = 0
+            self.mask[:, -dm:, -dm:, :] = 0
+            # self.mask[:, img_h//2-dm:img_h//2+dm, img_w//2-dm:img_w//2+dm, :] = 0
             if mode == 'lp':
                 self.mask = 1 - self.mask
         self.sep = sep
@@ -28,24 +33,26 @@ class Fourier_mse(nn.Module):
 
             ft_inputs = torch.fft(comp_inputs, 2)
             ft_targets = torch.fft(comp_targets, 2)
-            masked_inputs = ft_inputs * M
+            # masked_inputs = ft_inputs * M
             masked_targets = ft_targets * M
-            diff_ft = nn.MSELoss()(masked_inputs, masked_targets)
+            diff_ft = nn.MSELoss()(ft_inputs, masked_targets)
             sum_loss = sum_loss + diff_ft
 
         return sum_loss / 3
 
     def predict(self, inputs):
-        M = self.mask.repeat((inputs.size(0), 1, 1))
+        M = self.mask.repeat((inputs.size(0), 1, 1, 1))
         dst = []
+        masked_dst = []
         for c in range(inputs.size(1)):
             cat_inputs = inputs[:, c, :, :, None]
             comp_inputs = torch.cat((cat_inputs, torch.zeros_like(cat_inputs)), axis=-1)
             ft_inputs = torch.fft(comp_inputs, 2)
+            dst.append(ft_inputs)
             buff = M * ft_inputs
-            dst.append(buff)
+            masked_dst.append(buff)
 
-        return dst_real
+        return dst, masked_dst
 
 
 class TripletLoss(nn.Module):
