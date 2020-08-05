@@ -85,6 +85,7 @@ def argparses():
     parser = argparse.ArgumentParser()
     parser.add_argument('--epoch', type=int, default=300)
     parser.add_argument('--batch', type=int, default=64)
+    parser.add_argument('--espan', type=int, default=10)
     parser.add_argument('--data', type=str, default='toy')
     parser.add_argument('--mode', type=str, default='all')
     parser.add_argument('--param', type=str, default='best')
@@ -100,6 +101,8 @@ def argparses():
     parser.add_argument('--dm', type=int, default=0)
     parser.add_argument('--fill', type=str, default='hp')
     parser.add_argument('--fou', action='store_true')
+    parser.add_argument('--channels', type=int, nargs='+', default=[3,16,32,64,128])
+
     return parser.parse_args()
 
 
@@ -126,7 +129,7 @@ def main():
 
     srcs, targets1, targets2 = get_flatted_data(data_path)
     data_pairs = torch.utils.data.TensorDataset(srcs, targets1, targets2)
-    model = CrossDisentangleNet(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w)
+    model = CrossDisentangleNet(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, channels=args.channels)
 
     if args.retrain:
         model.load_state_dict(torch.load('{}/param/test_param.json'.format(out_source_dpath)))
@@ -240,7 +243,7 @@ def main():
         writer.add_scalar('sub classifier loss',
             np.mean(CLoss_sub), epoch+1)
         
-        if (epoch + 1) % 10 == 0:
+        if (epoch + 1) % args.espan == 0:
             model.eval()
             with torch.no_grad():
                 for in_data, target1, target2 in train_loader:
@@ -348,7 +351,7 @@ def validate(data_path='data/toy_data.hdf5'):
     clean_directory(out_fig_dpath)
 
     srcs, targets1, targets2 = get_triplet_flatted_data(data_path)    
-    model = CrossDisentangleNet(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w)
+    model = CrossDisentangleNet(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, channels=args.channels)
     if args.param == 'best':
         model.load_state_dict(torch.load('{}/test_bestparam.json'.format(out_param_dpath)))
     else:
@@ -538,7 +541,7 @@ def test():
     else:
         srcs, targets1, targets2 = get_triplet_flatted_data(data_path)
     
-    model = CrossDisentangleNet(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w)
+    model = CrossDisentangleNet(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, channels=args.channels)
     if args.param == 'best':
         model.load_state_dict(torch.load('{}/TDAE_test_bestparam.json'.format(out_param_dpath)))
     else:

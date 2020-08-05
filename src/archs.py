@@ -573,9 +573,9 @@ class TDAE(nn.Module):
 
         subnets = []
         classifiers = []
-        for c in n_classes:        
+        for i in range(len(n_classes)):     
             subnets.append(self.get_subnet(channel=channels[-1], ksize=ksize, nconv=2))
-            classifiers.append(nn.Linear(in_features=latent_dim, out_features=c))
+            classifiers.append(nn.Linear(in_features=latent_dim, out_features=n_classes[0]))
         self.subnets = nn.ModuleList(subnets)
         self.classifiers = nn.ModuleList(classifiers)
 
@@ -612,7 +612,7 @@ class TDAE(nn.Module):
         concat_h0 = self.dec_fc1(concat_h0)
         concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), self.channels[-1], self.img_h//(2**5), self.img_w//(2**5)))
         rec = self.dec(concat_h0)
-        return classifier_preds[0], classifier_preds[1], rec
+        return classifier_preds[0], classifier_preds[1], classifier_preds[2], rec
 
     def predict_label(self, input):
         h0 = self.enc(input)
@@ -651,11 +651,251 @@ class TDAE(nn.Module):
         for i in range(len(self.subnets)):
             output_subnets.append(self.subnets[i](h0))
 
-        output_subnets = [output_subnets[s] for s in shuffle_idx]
+        # shuffle_output_subnets = [output_subnets[s] for s in shuffle_idx]
+        idx = [idx1, idx2]
+        for i in range(len(output_subnets)):
+            output_subnets[i] = output_subnets[i][idx[i]]
+        concat_h0 = torch.cat(output_subnets, dim=1)
+        concat_h0 = self.dec_fc1(concat_h0)
+        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), self.channels[-1], self.img_h//(2**5), self.img_w//(2**5)))
+        rec = self.dec(concat_h0)
+        return rec
 
-        for i, (ii, idx) in enumerate(zip(range(len(output_subnets)), [idx1, idx2])):
-            output_subnets[i] = output_subnets[ii][idx]
+    def get_subnet(self, channel, ksize, nconv):
+        subnet_layers = []
+        for i in range(nconv):
+            subnet_layers.append(base_conv(channel, channel, ksize, stride=1))
+        subnet_layers.append(nn.AvgPool2d(kernel_size=self.img_w//(2**5)))
+        subnet_layers.append(Flatten())
+        subnet_layers.append(nn.Linear(in_features=channel, out_features=self.latent_dim))
+        subnet_layers.append(nn.ReLU())
+        return nn.Sequential(*subnet_layers)
 
+
+class TDAE_D2AE(nn.Module):
+    def __init__(self, n_classes, ksize=3, img_w=256, img_h=256, channels=[3, 16, 32, 64, 128], n_decov=2, latent_dim=256):
+        super().__init__()
+
+        self.img_h, self.img_w = img_h, img_w
+        self.channels = channels
+        self.latent_dim = latent_dim
+
+        enc_layers = []
+        for i in range(len(channels)-1):
+            enc_layers.append(base_conv(channels[i], channels[i+1], ksize))
+        enc_layers.append(base_conv(channels[-1], channels[-1], ksize))
+        self.enc = nn.Sequential(*enc_layers)
+
+        subnets = []
+        classifiers = []
+        for i in range(len(n_classes)):     
+            subnets.append(self.get_subnet(channel=channels[-1], ksize=ksize, nconv=2))
+            classifiers.append(nn.Linear(in_features=latent_dim, out_features=n_classes[0]))
+        self.subnets = nn.ModuleList(subnets)
+        self.classifiers = nn.ModuleList(classifiers)
+
+        self.dec_fc1 = nn.Sequential(nn.Linear(in_features=latent_dim*len(n_classes), 
+                                    out_features=(self.img_w//(2**5))*(self.img_h//(2**5))*channels[-1]),
+                                    nn.ReLU())
+
+        dec_layers = [base_deconv(channels[4], channels[4])]
+        dec_layers.append(base_conv(channels[4], channels[4], ksize, stride=1))
+        dec_layers.append(base_conv(channels[4], channels[4], ksize, stride=1))
+        for in_c, out_c in zip(channels[::-1][:-1], channels[::-1][1:]):
+            if out_c == channels[0]:
+                dec_layers.append(nn.ConvTranspose2d(in_c, out_c, 2, stride=2))
+                dec_layers.append(nn.Sigmoid())
+                break
+            dec_layers.append(base_deconv(in_c, out_c))
+            for i in range(n_decov):
+                dec_layers.append(base_conv(out_c, out_c, ksize, stride=1))
+        
+        self.dec = nn.Sequential(*dec_layers)
+        initialize_weights(self)
+
+    def forward(self, input):
+        h0 = self.enc(input)
+        output_subnets = []
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
+
+        classifier_preds = []
+        output_subnets_no_grad = output_subnets[-1].clone().detach()
+        classifier_preds.append(self.classifiers[0](output_subnets[0]))
+        classifier_preds.append(self.classifiers[1](output_subnets[1]))
+        classifier_preds.append(self.classifiers[1](output_subnets_no_grad))
+        # for i, ii in itertools.product(range(len(self.classifiers)), range(len(output_subnets))):
+        #     classifier_preds.append(self.classifiers[i](output_subnets[ii]))
+
+        concat_h0 = torch.cat(output_subnets, dim=1)
+        concat_h0 = self.dec_fc1(concat_h0)
+        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), self.channels[-1], self.img_h//(2**5), self.img_w//(2**5)))
+        rec = self.dec(concat_h0)
+        return classifier_preds[0], classifier_preds[1], classifier_preds[2], rec
+
+    def predict_label(self, input):
+        h0 = self.enc(input)
+        output_subnets = []
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
+
+        classifier_preds = []
+        for i, ii in itertools.product(range(len(self.classifiers)), range(len(output_subnets))):
+            classifier_preds.append(self.classifiers[i](output_subnets[ii]))
+        
+        return torch.max(classifier_preds[0], 1), torch.max(classifier_preds[1], 1)
+
+    def hidden_output(self, input):
+        h0 = self.enc(input)
+        output_subnets = []
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
+        return output_subnets
+
+    def reconst(self, input):
+        h0 = self.enc(input)
+        output_subnets = []
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
+        
+        concat_h0 = torch.cat(output_subnets, dim=1)
+        concat_h0 = self.dec_fc1(concat_h0)
+        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), self.channels[-1], self.img_h//(2**5), self.img_w//(2**5)))
+        rec = self.dec(concat_h0)
+        return rec
+
+    def shuffle_reconst(self, input, idx1, idx2, shuffle_idx=[1, 0]):
+        h0 = self.enc(input)
+        output_subnets = []
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
+
+        # shuffle_output_subnets = [output_subnets[s] for s in shuffle_idx]
+        idx = [idx1, idx2]
+        for i in range(len(output_subnets)):
+            output_subnets[i] = output_subnets[i][idx[i]]
+        concat_h0 = torch.cat(output_subnets, dim=1)
+        concat_h0 = self.dec_fc1(concat_h0)
+        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), self.channels[-1], self.img_h//(2**5), self.img_w//(2**5)))
+        rec = self.dec(concat_h0)
+        return rec
+
+    def get_subnet(self, channel, ksize, nconv):
+        subnet_layers = []
+        for i in range(nconv):
+            subnet_layers.append(base_conv(channel, channel, ksize, stride=1))
+        subnet_layers.append(nn.AvgPool2d(kernel_size=self.img_w//(2**5)))
+        subnet_layers.append(Flatten())
+        subnet_layers.append(nn.Linear(in_features=channel, out_features=self.latent_dim))
+        subnet_layers.append(nn.ReLU())
+        return nn.Sequential(*subnet_layers)
+
+
+class TestNet(nn.Module):
+    def __init__(self, n_classes, ksize=3, img_w=256, img_h=256, channels=[3, 16, 32, 64, 128], n_decov=2, latent_dim=256, base_net='res'):
+        super().__init__()
+        self.img_h, self.img_w = img_h, img_w
+        self.channels = channels
+        self.latent_dim = latent_dim
+        subnets = []
+        classifiers = []
+        dec_layers = []
+        if base_net == 'res':
+            self.enc = models.resnet18(pretrained=False)
+            self.enc = nn.Sequential(*list(self.enc.children())[:8])
+            subnet_input_dim = 512
+        else:
+            enc_layers = []
+            for i in range(len(channels)-1):
+                enc_layers.append(base_conv(channels[i], channels[i+1], ksize))
+            enc_layers.append(base_conv(channels[-1], channels[-1], ksize))
+            self.enc = nn.Sequential(*enc_layers)
+            subnet_input_dim = channels[-1]
+        for i in range(len(n_classes)):     
+            subnets.append(self.get_subnet(channel=subnet_input_dim, ksize=ksize, nconv=2))
+            classifiers.append(nn.Linear(in_features=latent_dim, out_features=n_classes[0]))
+
+        self.subnets = nn.ModuleList(subnets)
+        self.classifiers = nn.ModuleList(classifiers)
+
+        self.dec_fc1 = nn.Sequential(nn.Linear(in_features=latent_dim*len(n_classes), 
+                                    out_features=(self.img_w//(2**5))*(self.img_h//(2**5))*channels[-1]),
+                                    nn.ReLU())
+
+        dec_layers.append(base_deconv(channels[4], channels[4]))
+        dec_layers.append(base_conv(channels[4], channels[4], ksize, stride=1))
+        dec_layers.append(base_conv(channels[4], channels[4], ksize, stride=1))
+        for in_c, out_c in zip(channels[::-1][:-1], channels[::-1][1:]):
+            if out_c == channels[0]:
+                dec_layers.append(nn.ConvTranspose2d(in_c, out_c, 2, stride=2))
+                dec_layers.append(nn.Sigmoid())
+                break
+            dec_layers.append(base_deconv(in_c, out_c))
+            for i in range(n_decov):
+                dec_layers.append(base_conv(out_c, out_c, ksize, stride=1))
+        
+        self.dec = nn.Sequential(*dec_layers)
+        initialize_weights(self)
+
+    def forward(self, input):
+        h0 = self.enc(input)
+        output_subnets = []
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
+
+        output_subnets_no_grad = output_subnets[-1].clone().detach()
+        classifier_preds = []
+        classifier_preds.append(self.classifiers[0](output_subnets[0]))
+        classifier_preds.append(self.classifiers[1](output_subnets[1]))
+        classifier_preds.append(self.classifiers[1](output_subnets_no_grad))
+        # for i, ii in itertools.product(range(len(self.classifiers)), range(len(output_subnets))):
+        #     classifier_preds.append(self.classifiers[i](output_subnets[ii]))
+
+        concat_h0 = torch.cat(output_subnets, dim=1)
+        concat_h0 = self.dec_fc1(concat_h0)
+        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), self.channels[-1], self.img_h//(2**5), self.img_w//(2**5)))
+        rec = self.dec(concat_h0)
+        return classifier_preds[0], classifier_preds[1], classifier_preds[2], rec
+
+    def predict_label(self, input):
+        h0 = self.enc(input)
+        output_subnets = []
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
+
+        classifier_preds = []
+        for i, ii in itertools.product(range(len(self.classifiers)), range(len(output_subnets))):
+            classifier_preds.append(self.classifiers[i](output_subnets[ii]))
+        
+        return torch.max(classifier_preds[0], 1), torch.max(classifier_preds[1], 1)
+
+    def hidden_output(self, input):
+        h0 = self.enc(input)
+        output_subnets = []
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
+        return output_subnets
+
+    def reconst(self, input):
+        h0 = self.enc(input)
+        output_subnets = []
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
+        
+        concat_h0 = torch.cat(output_subnets, dim=1)
+        concat_h0 = self.dec_fc1(concat_h0)
+        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), self.channels[-1], self.img_h//(2**5), self.img_w//(2**5)))
+        rec = self.dec(concat_h0)
+        return rec
+
+    def shuffle_reconst(self, input, idx1, idx2, shuffle_idx=[1, 0]):
+        h0 = self.enc(input)
+        output_subnets = []
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
+        idx = [idx1, idx2]
+        for i in range(len(output_subnets)):
+            output_subnets[i] = output_subnets[i][idx[i]]
         concat_h0 = torch.cat(output_subnets, dim=1)
         concat_h0 = self.dec_fc1(concat_h0)
         concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), self.channels[-1], self.img_h//(2**5), self.img_w//(2**5)))
