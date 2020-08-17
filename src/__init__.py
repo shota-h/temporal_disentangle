@@ -1,3 +1,4 @@
+import sys
 import os
 import csv
 import collections
@@ -22,3 +23,26 @@ def clean_directory(dpath):
         os.mkdir(dpath)
     else:
         os.makedirs(dpath)
+        
+class SetIO():
+    """with構文でI/Oを切り替えるためのクラス"""
+    def __init__(self, filename: str):
+        self.filename = filename
+
+    def __enter__(self):
+        sys.stdout = _STDLogger(out_file=self.filename)
+
+    def __exit__(self, *args):
+        sys.stdout = sys.__stdout__
+
+class _STDLogger():
+    """カスタムI/O"""
+    def __init__(self, out_file='out.log'):
+        self.log = open(out_file, "a+")
+
+    def write(self, message):
+        self.log.write(message)
+
+    def flush(self):
+        # this flush method is needed for python 3 compatibility.
+        pass

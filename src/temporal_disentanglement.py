@@ -30,14 +30,16 @@ from torch.optim.lr_scheduler import _LRScheduler, StepLR
 from torch.utils.data import DataLoader, Dataset
 import torchvision.models as models
 from torchvision.utils import make_grid
+from torchvision.datasets import SVHN, MNIST
+from torchvision import transforms
+
 import tensorboardX as tbx
 
 from losses import TripletLoss, negative_entropy_loss, Fourier_mse
 from metrics import true_positive_multiclass, true_positive, true_negative
-from __init__ import clean_directory 
+from __init__ import clean_directory, SetIO
 from data_handling import get_triplet_flatted_data, get_flatted_data, get_triplet_flatted_data_with_idx
-# from archs import TDAE_out, TDAE, TDAE_D2AE
-from archs import TDAE_out, TDAE
+from archs import TDAE_out, TDAE, base_classifier
 from archs import TestNet as TDAE_D2AE
 
 SEED = 1
@@ -59,12 +61,27 @@ def args2pandas(args):
         dict_args[k] = [dict_args[k]]
     return pd.DataFrame.from_dict(dict_args)
 
+def get_character_dataset():
+    mnist_train = MNIST("./data/MNIST", train=True, download=True, transform=transforms.ToTensor())
+    # mnist_test = MNIST("MNIST", train=False, download=True, transform=transforms.ToTensor())
+    SVHN_train = SVHN("./data/SVHN", split='train', download=True, transform=transforms.ToTensor())
+    
+    print(mnist_train.data.max(), mnist_train.data.min(), mnist_train.data.size())
+    print(SVHN_train.data.max(), SVHN_train.data.min(), SVHN_train.data.shape)
+    print(mnist_train.targets.max(), mnist_train.targets.min())
+    print(SVHN_train.labels.max(), SVHN_train.labels.min())
+    # SVHN_test = SVHN("SVHN", split='test', download=True, transform=transforms.ToTensor())
+
+    # train_loader = DataLoader(mnist_train, batch_size=batch_size, shuffle=True)
+    # test_loader = DataLoader(mnist_test, batch_size=batch_size, shuffle=True)
+
+
 def argparses():
     parser = argparse.ArgumentParser()
     parser.add_argument('--epoch', type=int, default=300)
     parser.add_argument('--batch', type=int, default=64)
     parser.add_argument('--dlim', type=int, default=0)
-    parser.add_argument('--ndeconv', type=int, default=2)
+    parser.add_argument('--ndeconv', type=int, default=1)
     parser.add_argument('--espan', type=int, default=10)
     parser.add_argument('--dm', type=int, default=0)
     parser.add_argument('--data', type=str, default='toy')
@@ -82,6 +99,7 @@ def argparses():
     parser.add_argument('--fou', action='store_true')
     parser.add_argument('--d2ae', action='store_true')
     parser.add_argument('--rev', action='store_true')
+    parser.add_argument('--ngpus', default=1)
     parser.add_argument('--channels', type=int, nargs='+', default=[3,16,32,64,128])
     return parser.parse_args()
 
@@ -128,6 +146,204 @@ def validate_linearclassifier(X_train, Y_train, X_tests, Y_tests):
     return train_score, test_scores
 
 
+def test_classifier():
+    args = argparses()
+    if 'freq' in args.data:
+        img_w, img_h = 256, 256
+        out_source_dpath = './reports/TDAE_freq'
+        data_path='data/toy_data_freq_shape.hdf5'
+    elif 'toy' in args.data:
+        img_w, img_h = 256, 256
+        out_source_dpath = './reports/TDAE_toy'
+        data_path='data/toy_data.hdf5'
+    elif 'colon' in args.data:
+        img_w, img_h = 224, 224
+        out_source_dpath = './reports/TDAE_colon' 
+        data_path='data/colon_renew.hdf5'
+    else:
+        return
+
+    if args.ex is None:
+        pass
+    else:
+        out_source_dpath = out_source_dpath + '/' + args.ex
+
+    if args.retrain:
+        out_param_dpath = '{}/re_param'.format(out_source_dpath)
+        out_test_dpath = '{}/re_test_{}'.format(out_source_dpath, args.param)
+    else:
+        out_param_dpath = '{}/param'.format(out_source_dpath)
+        out_test_dpath = '{}/test_{}'.format(out_source_dpath, args.param)
+    clean_directory(out_test_dpath)
+
+    d2ae_flag = False
+    if args.rev:
+        srcs, targets2, targets1 = get_flatted_data(data_path)
+    else:
+        srcs, targets1, targets2 = get_flatted_data(data_path)
+    data_pairs = torch.utils.data.TensorDataset(srcs, targets1, targets2)
+    
+    model = base_classifier(n_class=torch.unique(targets1).size(0), img_h=img_h, img_w=img_w)
+    if args.param == 'best':
+        model.load_state_dict(torch.load('{}/TDAE_test_bestparam.json'.format(out_param_dpath)))
+    else:
+        model.load_state_dict(torch.load('{}/TDAE_test_param.json'.format(out_param_dpath)))
+    model = model.to(device)
+
+    ratio = [0.7, 0.2, 0.1]
+    n_sample = len(data_pairs)
+    train_size = int(n_sample*ratio[0])
+    val_size = int(n_sample*ratio[1])
+    test_size = n_sample - train_size - val_size
+    
+    train_indices = list(range(0, train_size))
+    val_indices = list(range(train_size, train_size+val_size))
+    test_indices = list(range(train_size+val_size, n_sample))
+
+    train_set = torch.utils.data.dataset.Subset(data_pairs, train_indices)
+    train_loader = DataLoader(train_set, batch_size=32, shuffle=False)
+    val_set = torch.utils.data.dataset.Subset(data_pairs, val_indices)
+    val_loader = DataLoader(val_set, batch_size=32, shuffle=False)
+    test_set = torch.utils.data.dataset.Subset(data_pairs, test_indices)
+    test_loader = DataLoader(test_set, batch_size=32, shuffle=False)
+    score_dict = {}
+    with torch.no_grad():
+        model.eval()
+        for tag, loader, siz in zip(['train', 'val', 'test'], [train_loader, val_loader, test_loader], [train_size, val_size, test_size]):
+            Acc = 0
+            for iter, (in_data, target, _) in enumerate(loader):
+                preds = model(in_data.to(device))
+                y_true = target.to('cpu')
+                preds = preds.detach().to('cpu')
+                Acc += true_positive_multiclass(preds, y_true)
+            score_dict[tag] = [Acc/siz]
+    df = pd.DataFrame.from_dict(score_dict)
+    df.to_csv('{}/Score.csv'.format(out_test_dpath))
+
+
+def train_classifier():
+    args = argparses()
+    if 'freq' in args.data:
+        img_w, img_h = 256, 256
+        out_source_dpath = './reports/TDAE_freq' 
+        data_path = './data/toy_data_freq_shape.hdf5'
+    elif 'toy' in args.data:
+        img_w, img_h = 256, 256
+        out_source_dpath = './reports/TDAE_toy' 
+        data_path = './data/toy_data.hdf5'
+    elif 'colon' in args.data:
+        img_w, img_h = 224, 224
+        out_source_dpath = './reports/TDAE_colon'
+        data_path = './data/colon_renew.hdf5'
+    else:
+        return
+    if not(args.ex is None):
+        out_source_dpath = os.path.join(out_source_dpath, args.ex)
+
+    if args.rev:
+        src, targets2, targets1 = get_flatted_data(data_path)
+    else:
+        src, targets1, targets2 = get_flatted_data(data_path)
+    data_pairs = torch.utils.data.TensorDataset(src, targets1, targets2)
+
+    # if args.dlim > 0:
+    #     data_pairs = torch.utils.data.TensorDataset(srcs[0][:args.dlim], srcs[1][:args.dlim], srcs[2][:args.dlim], targets1[:args.dlim], targets2[:args.dlim])
+    
+    model = base_classifier(n_class=torch.unique(targets1).size(0), img_h=img_h, img_w=img_w)
+
+    if args.retrain:
+        model.load_state_dict(torch.load('{}/param/TDAE_test_param.json'.format(out_source_dpath)))
+        out_param_dpath = '{}/re_param'.format(out_source_dpath)
+        out_board_dpath = '{}/re_runs'.format(out_source_dpath)
+        out_condition_dpath = '{}/re_condition'.format(out_source_dpath)
+    else:
+        out_param_dpath = '{}/param'.format(out_source_dpath)
+        out_board_dpath = '{}/runs'.format(out_source_dpath)
+        out_condition_dpath = '{}/condition'.format(out_source_dpath)
+
+    clean_directory(out_param_dpath)
+    clean_directory(out_board_dpath)
+    clean_directory(out_condition_dpath)
+    writer = tbx.SummaryWriter(out_board_dpath)
+    if args.multi:
+        g_list = [i for i in range(args.ngpus)]
+        model = nn.DataParallel(model, device_ids=g_list)
+    model = model.to(device)
+    
+    ratio = [0.7, 0.2, 0.1]
+    n_sample = len(data_pairs)
+    train_size = int(n_sample*ratio[0])
+    val_size = int(n_sample*ratio[1])
+    test_size = n_sample - train_size - val_size
+
+    # train_set, val_set = torch.utils.data.random_split(data_pairs, [train_size, val_size])
+    train_indices = list(range(0, train_size))
+    val_indices = list(range(train_size, train_size+val_size))
+    train_set = torch.utils.data.dataset.Subset(data_pairs, train_indices)
+    val_set = torch.utils.data.dataset.Subset(data_pairs, val_indices)
+    train_loader = DataLoader(train_set, batch_size=args.batch, shuffle=True)
+    val_loader = DataLoader(val_set, batch_size=args.batch, shuffle=False)
+    print(len(train_loader))
+    # criterion_adv = nn.NLLLoss()
+    criterion_classifier = nn.CrossEntropyLoss()
+    params = list(model.parameters())
+    optimizer = optim.Adam(params)
+    n_epochs = args.epoch
+    best_epoch = 0
+    best_loss = np.inf
+    for epoch in range(n_epochs):
+        Loss = []
+        for ite, (in_data, target, _) in enumerate(train_loader):
+            model.train()
+            model.zero_grad()
+            preds = model.forward(in_data.to(device))
+            loss_classifier_main = criterion_classifier(preds.to(device), target.to(device))
+            loss_classifier_main.backward(retain_graph=True)
+            optimizer.step()
+            loss = loss_classifier_main
+            Loss.append(loss.item())
+            
+        print('epoch: {} loss: {}'.format(epoch+1, np.mean(Loss)))
+
+        summary = scalars2summary(writer=writer,
+                            tags=['loss/train_all'], 
+                            vals=[np.mean(Loss)], epoch=epoch+1)
+        
+        if (epoch + 1) % args.espan == 0:
+            model.eval()
+            with torch.no_grad():
+                X_val, Y_val1, Y_val2 = [], [], []
+                val_losses = []
+                for v_i, (in_data, target1, target2) in enumerate(val_loader):
+                    preds = model.forward(in_data.to(device))
+                    val_loss_classifier_main = criterion_classifier(preds.to(device), target1.to(device))
+                    val_loss = val_loss_classifier_main
+                    val_losses.append(val_loss.item())
+
+                summary = scalars2summary(writer=writer, 
+                    tags=['loss/val_all'], 
+                    vals=[np.mean(val_losses)], epoch=epoch+1)
+
+                print('epoch: {} val loss: {}'.format(epoch+1, np.mean(val_losses)))
+
+                if best_loss > np.mean(val_losses):
+                    best_epoch = epoch + 1
+                    best_loss = np.mean(val_losses)
+                    if args.multi:
+                        torch.save(model.module.state_dict(), '{}/TDAE_test_bestparam.json'.format(out_param_dpath))
+                    else:
+                        torch.save(model.state_dict(), '{}/TDAE_test_bestparam.json'.format(out_param_dpath))
+    if args.multi:
+        torch.save(model.module.state_dict(), '{}/TDAE_test_param.json'.format(out_param_dpath))
+    else:
+        torch.save(model.state_dict(), '{}/TDAE_test_param.json'.format(out_param_dpath))
+    args.best_epoch = best_epoch
+    df = args2pandas(args)
+    df.to_csv('{}/condition.csv'.format(out_condition_dpath))
+    
+    writer.close()
+
+
 def triplet_train_TDAE():
     args = argparses()
     if 'freq' in args.data:
@@ -171,9 +387,12 @@ def triplet_train_TDAE():
     val_loader = DataLoader(val_set, batch_size=args.batch, shuffle=False)
 
     if args.d2ae:
-        model = TDAE_D2AE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels)
+        model = TDAE_D2AE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels, triplet=args.triplet)
     else:
         model = TDAE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels)
+    if args.ngpus > 1:
+        g_list = [i for i in range(args.ngpus)]
+        model = nn.DataParallel(model, device_ids=g_list)
     model = model.to(device)
 
     if args.retrain:
@@ -371,9 +590,15 @@ def triplet_train_TDAE():
                 if best_loss > np.mean(val_losses):
                     best_epoch = epoch + 1
                     best_loss = np.mean(val_losses)
-                    torch.save(model.state_dict(), '{}/TDAE_test_bestparam.json'.format(out_param_dpath))
+                    if args.ngpus > 1:
+                        torch.save(model.module.state_dict(), '{}/TDAE_test_bestparam.json'.format(out_param_dpath))
+                    else:
+                        torch.save(model.state_dict(), '{}/TDAE_test_bestparam.json'.format(out_param_dpath))
 
-    torch.save(model.state_dict(), '{}/TDAE_test_param.json'.format(out_param_dpath))
+    if args.ngpus > 1:
+        torch.save(model.module.state_dict(), '{}/TDAE_test_param.json'.format(out_param_dpath))
+    else:
+        torch.save(model.state_dict(), '{}/TDAE_test_param.json'.format(out_param_dpath))
     
     args.best_epoch = best_epoch
     df = args2pandas(args)
@@ -915,7 +1140,11 @@ def train_TDAE():
     writer.close()
 
 
-def val_TDAE():
+def val_TDAE(zero_padding=False):
+    torch.manual_seed(SEED)
+    rn.seed(SEED)
+    np.random.seed(SEED)
+    
     args = argparses()
     if 'freq' in args.data:
         img_w, img_h = 256, 256
@@ -931,7 +1160,6 @@ def val_TDAE():
         data_path='data/colon_renew.hdf5'
     else:
         return
-
     if args.ex is None:
         pass
     else:
@@ -979,8 +1207,44 @@ def val_TDAE():
     val_set = torch.utils.data.dataset.Subset(data_pairs, val_indices)
     train_loader = DataLoader(train_set, batch_size=2, shuffle=True)
     val_loader = DataLoader(val_set, batch_size=2, shuffle=True)
-
+    
     cat_val_set = val_set
+    if zero_padding:
+        with torch.no_grad():
+            model.eval()
+            for n_iter, (inputs, targets1, target2) in enumerate(train_loader):
+                reconst = model.reconst(inputs.to(device))
+                s_reconst = model.fix_padding_reconst(inputs.to(device), which_val=1, pad_val=0)
+                np_input0 = inputs[0].detach().to('cpu')
+                np_input1 = inputs[1].detach().to('cpu')
+                np_reconst0 = reconst[0].detach().to('cpu')
+                np_reconst1 = reconst[1].detach().to('cpu')
+                s_np_reconst0 = s_reconst[0].detach().to('cpu')
+                s_np_reconst1 = s_reconst[1].detach().to('cpu')
+                fig = plt.figure(figsize=(16*2, 9*2))
+                ax = fig.add_subplot(2, 3, 1)
+                ax.set_title('1')
+                ax.imshow(np.transpose(np_input0, (1,2,0)))
+                ax = fig.add_subplot(2, 3, 2)
+                ax.set_title('1')
+                ax.imshow(np.transpose(np_reconst0, (1,2,0)))
+                ax = fig.add_subplot(2, 3, 3)
+                ax.set_title('1')
+                ax.imshow(np.transpose(s_np_reconst0, (1,2,0)))
+                ax = fig.add_subplot(2, 3, 4)
+                ax.set_title('2')
+                ax.imshow(np.transpose(np_input1, (1,2,0)))
+                ax = fig.add_subplot(2, 3, 5)
+                ax.set_title('2')
+                ax.imshow(np.transpose(np_reconst1, (1,2,0)))
+                ax = fig.add_subplot(2, 3, 6)
+                ax.set_title('2')
+                ax.imshow(np.transpose(s_np_reconst1, (1,2,0)))
+                fig.savefig('{}/train_sample{:04d}_zero_pad.png'.format(out_val_dpath, n_iter))
+                plt.close(fig)
+                if n_iter >= 10:
+                    return
+
     with torch.no_grad():
         model.eval()
         for n_iter, (inputs, targets1, target2) in enumerate(val_loader):
@@ -1073,14 +1337,21 @@ def val_TDAE():
         X_train1 = tsne.fit_transform(X_train1)
         X_train2 = tsne.fit_transform(X_train2)
 
+        picK_idx = [2*i+j for i in range(50) for j in [0, 1]]
         fig = plt.figure(figsize=(16*2, 9))
         ax = fig.add_subplot(1,2,1)
         for k in np.unique(Y_train1):
             ax.scatter(x=X_train1[Y_train1==k,0], y=X_train1[Y_train1==k,1], marker='.', alpha=0.5)
+        ax.scatter(x=X_train1[picK_idx,0], y=X_train1[picK_idx,1], color='red', marker='x')
+        for txt in picK_idx:
+            ax.annotate(txt, (X_train1[txt, 0], X_train1[txt, 1]))
         ax.set_aspect('equal', 'datalim')
         ax = fig.add_subplot(1,2,2)
         for k in np.unique(Y_train2):
             ax.scatter(x=X_train1[Y_train2==k,0], y=X_train1[Y_train2==k,1], marker='.', alpha=0.5)
+        ax.scatter(x=X_train1[picK_idx,0], y=X_train1[picK_idx,1], color='red', marker='x')
+        for txt in picK_idx:
+            ax.annotate(txt, (X_train1[txt, 0], X_train1[txt, 1]))
         ax.set_aspect('equal', 'datalim')
         fig.savefig('{}/train_hidden_features_main.png'.format(out_fig_dpath))
         plt.close(fig)
@@ -1089,10 +1360,16 @@ def val_TDAE():
         ax = fig.add_subplot(1,2,1)
         for k in np.unique(Y_train1):
             ax.scatter(x=X_train2[Y_train1==k,0], y=X_train2[Y_train1==k,1], marker='.', alpha=0.5)
+        ax.scatter(x=X_train2[picK_idx,0], y=X_train2[picK_idx,1], color='red', marker='x')
+        for txt in picK_idx:
+            ax.annotate(txt, (X_train2[txt, 0], X_train2[txt, 1]))
         ax.set_aspect('equal', 'datalim')
         ax = fig.add_subplot(1,2,2)
         for k in np.unique(Y_train2):
             ax.scatter(x=X_train2[Y_train2==k,0], y=X_train2[Y_train2==k,1], marker='.', alpha=0.5)
+        ax.scatter(x=X_train2[picK_idx,0], y=X_train2[picK_idx,1], color='red', marker='x')
+        for txt in picK_idx:
+            ax.annotate(txt, (X_train2[txt, 0], X_train2[txt, 1]))
         ax.set_aspect('equal', 'datalim')
         fig.savefig('{}/train_hidden_features_sub.png'.format(out_fig_dpath))
         plt.close(fig)
@@ -1270,6 +1547,8 @@ def test_TDAE():
 def main():
     # if os.path.exists('./data/colon_renew.hdf5') is False:
     #     data_review()
+    # get_character_dataset()
+    # return
     args = argparses()
     print(args)
     if args.mode == 'train':
@@ -1291,5 +1570,5 @@ def main():
 
     
 if __name__ == '__main__':
-
+    # with SetIO('./out.log'):
     main()
