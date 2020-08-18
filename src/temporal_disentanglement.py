@@ -1335,7 +1335,7 @@ def train_TDAE_v2():
     writer.close()
 
 
-def train_TDAE_v3():
+def train_TDAE_full_super():
     args = argparses()
     if 'freq' in args.data:
         img_w, img_h = 256, 256
@@ -2274,7 +2274,7 @@ def main():
         if args.triplet:
             triplet_train_TDAE()
             return
-        train_TDAE_v3()
+        train_TDAE_full_super()
     elif args.mode == 'val':
         val_TDAE()
     elif args.mode == 'test':
@@ -2283,7 +2283,7 @@ def main():
         if args.triplet:
             triplet_train_TDAE()
         else:
-            train_TDAE_v3()
+            train_TDAE_full_super()
         val_TDAE()
         test_TDAE()
 
