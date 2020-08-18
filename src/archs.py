@@ -1147,9 +1147,10 @@ class TDAE_VAE(nn.Module):
         logvar_nets = []
         for i in range(len(n_classes)):     
             subnets.append(self.get_subnet(channel=subnet_input_dim, ksize=ksize, nconv=2))
-            classifiers.append(nn.Linear(in_features=latent_dim, out_features=n_classes[0]))
             mu_nets.append(self.get_mu_net())
             logvar_nets.append(self.get_logvar_net())
+            classifiers.append(nn.Linear(in_features=self.latent_dim, out_features=n_classes[0]))
+
         self.subnets = nn.ModuleList(subnets)
         self.classifiers = nn.ModuleList(classifiers)
         self.mu_nets = nn.ModuleList(mu_nets)

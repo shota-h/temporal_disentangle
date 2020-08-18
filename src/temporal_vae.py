@@ -696,7 +696,7 @@ def train_TDAE_VAE():
     for epoch in range(n_epochs):
         accs_p, acc_t = [], []
         Acc, Acc_adv, sub_Acc, sub_Acc_adv  = 0, 0, 0, 0
-        Loss, RecLoss, CLoss, CLoss_sub = [], [], [], []
+        Loss, RecLoss, CLoss, CLoss_sub, CSub = [], [], [], [], []
         for ite, (in_data, target, _) in enumerate(train_loader):
             model.train()
             model.zero_grad()
@@ -718,6 +718,7 @@ def train_TDAE_VAE():
             RecLoss.append(loss_reconst.item())
             CLoss.append(loss_classifier_main.item())
             CLoss_sub.append(loss_adv.item())
+            CSub.append(loss_classifier_sub.item())
             
             y_true = target.to('cpu')
             preds = preds.detach().to('cpu')
@@ -729,8 +730,8 @@ def train_TDAE_VAE():
 
 
         summary = scalars2summary(writer=writer,
-                            tags=['loss/train_all', 'loss/train_rec', 'loss/train_classifier', 'loss/train_adv'], 
-                            vals=[np.mean(Loss), np.mean(RecLoss), np.mean(CLoss), np.mean(CLoss_sub)], epoch=epoch+1)
+                            tags=['loss/train_all', 'loss/train_rec', 'loss/train_classifier', 'loss/train_adv', 'loss/train_classifier_sub'], 
+                            vals=[np.mean(Loss), np.mean(RecLoss), np.mean(CLoss), np.mean(CLoss_sub), np.mean(CSub)], epoch=epoch+1)
         # writer.add_scalar('summarize loss',
         #     np.mean(Loss), epoch)
         # writer.add_scalar('rec loss',
