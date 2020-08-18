@@ -706,10 +706,10 @@ def train_TDAE_VAE():
             loss_reconst.backward(retain_graph=True)
             loss_classifier_main = l_c * criterion_classifier(preds.to(device), target.to(device))
             loss_classifier_main.backward(retain_graph=True)
-            loss_adv = l_adv * negative_entropy_loss(preds_adv.to(device).to(device))
+            loss_adv = l_adv * negative_entropy_loss(sub_preds.to(device).to(device))
             loss_adv.backward(retain_graph=True)
             model.classifiers[1].zero_grad()
-            loss_classifier_sub = l_adv * criterion_classifier(sub_preds.to(device), target.to(device))
+            loss_classifier_sub = l_adv * criterion_classifier(preds_adv.to(device), target.to(device))
             loss_classifier_sub.backward(retain_graph=True)
             optimizer.step()
             loss = loss_classifier_main + loss_classifier_sub + loss_adv + loss_reconst
@@ -763,24 +763,24 @@ def train_TDAE_VAE():
                 val_c_loss = []
                 val_r_loss = []
                 val_a_loss = []
-                for v_i, (in_data, target1, target2) in enumerate(val_loader):
+                for v_i, (in_data, target1, _) in enumerate(val_loader):
                     (_, t0) = model.hidden_output(in_data.to(device))
                     t0 = t0.detach().to('cpu').numpy()
                     X_val.extend(t0)
                     Y_val1.extend(target1.detach().to('cpu').numpy())
                     Y_val2.extend(target2.detach().to('cpu').numpy())
 
-                preds, sub_preds, preds_adv, reconst, mu1, mu2, logvar1, logvar2 = model.forward(in_data.to(device))
-                val_loss_reconst = l_recon * criterion_vae(reconst.to(device), in_data.to(device), mu1, mu2, logvar1, logvar2)
-                val_loss_classifier_main = l_adv * criterion_classifier(preds.to(device), target1.to(device))
-                val_loss_classifier_sub = l_adv * criterion_classifier(sub_preds.to(device), target1.to(device))
-                val_loss_adv = l_adv * negative_entropy_loss(preds_adv.to(device))
-                val_loss = val_loss_reconst + val_loss_classifier_main + val_loss_adv + val_loss_classifier_sub
+                    preds, sub_preds, preds_adv, reconst, mu1, mu2, logvar1, logvar2 = model.forward(in_data.to(device))
+                    val_loss_reconst = l_recon * criterion_vae(reconst.to(device), in_data.to(device), mu1, mu2, logvar1, logvar2)
+                    val_loss_classifier_main = l_adv * criterion_classifier(preds.to(device), target1.to(device))
+                    val_loss_classifier_sub = l_adv * negative_entropy_loss(sub_preds.to(device))
+                    val_loss_adv = l_adv * criterion_classifier(preds_adv.to(device), target1.to(device))
+                    val_loss = val_loss_reconst + val_loss_classifier_main + val_loss_adv + val_loss_classifier_sub
 
-                val_losses.append(val_loss.item())
-                val_c_loss.append(val_loss_classifier_main.item())
-                val_r_loss.append(val_loss_reconst.item())
-                val_a_loss.append(val_loss_adv.item())
+                    val_losses.append(val_loss.item())
+                    val_c_loss.append(val_loss_classifier_main.item())
+                    val_r_loss.append(val_loss_reconst.item())
+                    val_a_loss.append(val_loss_adv.item())
             
                 X_train = np.asarray(X_train)
                 Y_train1 = np.asarray(Y_train1)

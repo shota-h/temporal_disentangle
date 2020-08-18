@@ -1196,11 +1196,6 @@ class TDAE_VAE(nn.Module):
         rec = self.dec(dec_h0)
         return rec
 
-    def forward(self, x):
-        mu, logvar = self.encode(x.view(-1, 784))
-        z = self.reparameterize(mu, logvar)
-        return self.decode(z), mu, logvar
-    
     def forward(self, input, latent=False):
         mu1, mu2, logvar1, logvar2 = self.encode(input)
         z1 = self.reparameterize(mu1, logvar1)
