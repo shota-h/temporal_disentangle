@@ -620,22 +620,22 @@ def train_TDAE_VAE():
     args = argparses()
     if 'freq' in args.data:
         img_w, img_h = 256, 256
-        out_source_dpath = './reports/TDAE_freq' 
+        out_source_dpath = './reports/TDAE_VAE_freq' 
         data_path = './data/toy_data_freq_shape.hdf5'
     elif 'toy' in args.data:
         img_w, img_h = 256, 256
-        out_source_dpath = './reports/TDAE_toy' 
+        out_source_dpath = './reports/TDAE_VAE_toy' 
         data_path = './data/toy_data.hdf5'
     elif 'colon' in args.data:
         img_w, img_h = 224, 224
-        out_source_dpath = './reports/TDAE_colon'
+        out_source_dpath = './reports/TDAE_VAE_colon'
         data_path = './data/colon_renew.hdf5'
     else:
         return
     if not(args.ex is None):
         out_source_dpath = os.path.join(out_source_dpath, args.ex)
 
-    if args.rev:
+    if args.rev:TDAE_VAE
         src, targets2, targets1 = get_flatted_data(data_path)
     else:
         src, targets1, targets2 = get_flatted_data(data_path)
@@ -776,7 +776,7 @@ def train_TDAE_VAE():
                 val_loss_classifier_sub = l_adv * criterion_classifier(sub_preds.to(device), target1.to(device))
                 val_loss_adv = l_adv * negative_entropy_loss(preds_adv.to(device))
                 val_loss = val_loss_reconst + val_loss_classifier_main + val_loss_adv + val_loss_classifier_sub
-                
+
                 val_losses.append(val_loss.item())
                 val_c_loss.append(val_loss_classifier_main.item())
                 val_r_loss.append(val_loss_reconst.item())
@@ -824,7 +824,7 @@ def train_TDAE_VAE():
     writer.close()
 
 
-def val_TDAE(zero_padding=False):
+def val_TDAE_VAE(zero_padding=False):
     torch.manual_seed(SEED)
     rn.seed(SEED)
     np.random.seed(SEED)
@@ -832,15 +832,15 @@ def val_TDAE(zero_padding=False):
     args = argparses()
     if 'freq' in args.data:
         img_w, img_h = 256, 256
-        out_source_dpath = './reports/TDAE_freq'
+        out_source_dpath = './reports/TDAE_VAE_freq'
         data_path='data/toy_data_freq_shape.hdf5'
     elif 'toy' in args.data:
         img_w, img_h = 256, 256
-        out_source_dpath = './reports/TDAE_toy'
+        out_source_dpath = './reports/TDAE_VAE_toy'
         data_path='data/toy_data.hdf5'
     elif 'colon' in args.data:
         img_w, img_h = 224, 224
-        out_source_dpath = './reports/TDAE_colon' 
+        out_source_dpath = './reports/TDAE_VAE_colon' 
         data_path='data/colon_renew.hdf5'
     else:
         return
@@ -866,11 +866,7 @@ def val_TDAE(zero_padding=False):
         srcs, targets1, targets2 = get_flatted_data(data_path)
     data_pairs = torch.utils.data.TensorDataset(srcs, targets1, targets2)
 
-    if args.d2ae:
-        model = TDAE_D2AE_v2(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels)
-    else:
-        model = TDAE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels)
-    # model = TDAE_out(n_class1=torch.unique(targets1).size(0), n_class2=torch.unique(targets2).size(0), d2ae_flag = d2ae_flag, img_h=img_h, img_w=img_w)
+    model = TDAE_VAE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels)
     if args.param == 'best':
         model.load_state_dict(torch.load('{}/TDAE_test_bestparam.json'.format(out_param_dpath)))
     else:
@@ -1104,19 +1100,19 @@ def val_TDAE(zero_padding=False):
         plt.close(fig)
 
 
-def test_TDAE():
+def test_TDAE_VAE():
     args = argparses()
     if 'freq' in args.data:
         img_w, img_h = 256, 256
-        out_source_dpath = './reports/TDAE_freq'
+        out_source_dpath = './reports/TDAE_VAE_freq'
         data_path='data/toy_data_freq_shape.hdf5'
     elif 'toy' in args.data:
         img_w, img_h = 256, 256
-        out_source_dpath = './reports/TDAE_toy'
+        out_source_dpath = './reports/TDAE_VAE_toy'
         data_path='data/toy_data.hdf5'
     elif 'colon' in args.data:
         img_w, img_h = 224, 224
-        out_source_dpath = './reports/TDAE_colon' 
+        out_source_dpath = './reports/TDAE_VAE_colon' 
         data_path='data/colon_renew.hdf5'
     else:
         return
@@ -1142,10 +1138,8 @@ def test_TDAE():
     data_pairs = torch.utils.data.TensorDataset(srcs, targets1, targets2)
     
     # model = TDAE_out(n_class1=torch.unique(targets1).size(0), n_class2=5, d2ae_flag = d2ae_flag, img_h=img_h, img_w=img_w)
-    if args.d2ae:
-        model = TDAE_D2AE_v2(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels)
-    else:
-        model = TDAE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels)
+    model = TDAE_VAE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels)
+
     if args.param == 'best':
         model.load_state_dict(torch.load('{}/TDAE_test_bestparam.json'.format(out_param_dpath)))
     else:
@@ -1233,26 +1227,11 @@ def main():
     #     data_review()
     # get_character_dataset()
     # return
-    train_TDAE_VAE()
-    return
     args = argparses()
     print(args)
-    if args.mode == 'train':
-        if args.triplet:
-            triplet_train_TDAE()
-            return
-        train_TDAE_v3()
-    elif args.mode == 'val':
-        val_TDAE()
-    elif args.mode == 'test':
-        test_TDAE()
-    else:
-        if args.triplet:
-            triplet_train_TDAE()
-        else:
-            train_TDAE_v3()
-        val_TDAE()
-        test_TDAE()
+    train_TDAE_VAE()
+    val_TDAE_VAE()
+    test_TDAE_VAE()
 
     
 if __name__ == '__main__':
