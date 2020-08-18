@@ -98,14 +98,13 @@ def make_index_rankingloss(target):
     return np.asarray(idx), np.asarray(labels)
 
 def loss_vae(recon_x, x, mu1, mu2, logvar1, logvar2):
-    BCE = F.binary_cross_entropy(recon_x.view(recon_x.size(0), -1), x.view(x.size(0), -1))
+    BCE = F.binary_cross_entropy(recon_x.view(recon_x.size(0), -1), x.view(x.size(0), -1), reduction='sum') / recon_x.size(0)
     # BCE = F.binary_cross_entropy(recon_x.view(recon_x.size(0), -1), xview(recon_x.size(0), -1), reduction='sum')
 
     # see Appendix B from VAE paper:
     # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014
     # https://arxiv.org/abs/1312.6114
     # 0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
-    KLD1 = -0.5 * torch.sum(1 + logvar1 - mu1.pow(2) - logvar1.exp(), dim=-1)
-    KLD2 = -0.5 * torch.sum(1 + logvar2 - mu2.pow(2) - logvar2.exp(), dim=-1)
-    KLD = torch.mean(KLD1 + KLD2)
-    return BCE + 0*KLD
+    KLD1 = torch.mean(-0.5 * torch.sum(1 + logvar1 - mu1.pow(2) - logvar1.exp(), dim=-1))
+    KLD2 = torch.mean(-0.5 * torch.sum(1 + logvar2 - mu2.pow(2) - logvar2.exp(), dim=-1))
+    return BCE + KLD1 + KLD2
