@@ -1,4 +1,4 @@
-python3 src/temporal_disentanglement.py --ex test_multi_rev --d2ae --rev --batch 64 --rec 10
+python3 src/temporal_disentanglement.py --ex test_multi_rev --d2ae --rev --batch 32 --rec 10
 wait
 python3 src/temporal_disentanglement.py --ex test_multi --d2ae --batch 64 --rec 10
 wait

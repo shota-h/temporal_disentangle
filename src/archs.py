@@ -1172,7 +1172,7 @@ class TDAE_VAE(nn.Module):
                 dec_layers.append(base_conv(out_c, out_c, ksize, stride=1))
         
         self.dec = nn.Sequential(*dec_layers)
-        initialize_weights(self)    def __init__(self):
+        initialize_weights(self)
 
     def encode(self, input):
         h0 = self.enc(input)

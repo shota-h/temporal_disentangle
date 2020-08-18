@@ -4,6 +4,11 @@ import random as rn
 import cv2
 import numpy as np
 import h5py
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--check', action='store_true')
+args = parser.parse_args()
 
 n_part = 3
 n_color = 2
@@ -27,7 +32,10 @@ flatten[::n_subcolor+1] = reccrent_prob_subcolor
 tran_prob_subcolor = np.resize(flatten, (n_subcolor, n_subcolor))
 n_seq = 100
 min_len = 20
-out_img = True
+if args.check:
+    out_img = True
+else:
+    out_img = False
 
 if os.path.exists('./data') is False:
     os.makedirs('./data')

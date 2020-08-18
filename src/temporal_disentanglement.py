@@ -2268,6 +2268,8 @@ def main():
     #     data_review()
     # get_character_dataset()
     # return
+    train_TDAE_VAE()
+    return
     args = argparses()
     print(args)
     if args.mode == 'train':
