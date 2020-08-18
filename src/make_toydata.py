@@ -1,4 +1,5 @@
 import sys
+import os
 import random as rn
 import cv2
 import numpy as np
@@ -28,6 +29,8 @@ n_seq = 100
 min_len = 20
 out_img = True
 
+if os.path.exists('./data') is False:
+    os.makedirs('./data')
 
 def color_shape():
     out_dpath = './data/toy_data.hdf5'
@@ -217,4 +220,5 @@ def freq_shape():
                     seq_continue = np.random.choice([True, False], size=1, p=continue_prob)[0]
 
 if __name__ == '__main__':
-    freq_shape()
+    # freq_shape()
+    color_shape()
