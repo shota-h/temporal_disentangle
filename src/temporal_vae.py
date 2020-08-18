@@ -763,7 +763,7 @@ def train_TDAE_VAE():
                 val_c_loss = []
                 val_r_loss = []
                 val_a_loss = []
-                for v_i, (in_data, target1, _) in enumerate(val_loader):
+                for v_i, (in_data, target1, target2) in enumerate(val_loader):
                     (_, t0) = model.hidden_output(in_data.to(device))
                     t0 = t0.detach().to('cpu').numpy()
                     X_val.extend(t0)
