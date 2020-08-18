@@ -635,7 +635,7 @@ def train_TDAE_VAE():
     if not(args.ex is None):
         out_source_dpath = os.path.join(out_source_dpath, args.ex)
 
-    if args.rev:TDAE_VAE
+    if args.rev:
         src, targets2, targets1 = get_flatted_data(data_path)
     else:
         src, targets1, targets2 = get_flatted_data(data_path)
