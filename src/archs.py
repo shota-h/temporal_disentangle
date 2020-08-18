@@ -1202,11 +1202,11 @@ class TDAE_VAE(nn.Module):
         z2 = self.reparameterize(mu2, logvar2)
         if latent: return z1, z2
 
-        z2_no_grad = z2.clone().detach()
+        mu2_no_grad = mu2.clone().detach()
         classifier_preds = []
-        classifier_preds.append(self.classifiers[0](z1))
-        classifier_preds.append(self.classifiers[1](z2))
-        classifier_preds.append(self.classifiers[1](z2_no_grad))
+        classifier_preds.append(self.classifiers[0](mu1))
+        classifier_preds.append(self.classifiers[1](mu2))
+        classifier_preds.append(self.classifiers[1](mu2_no_grad))
         rec = self.decode(z1, z2)
         if self.triplet:
             return classifier_preds[0], classifier_preds[1], classifier_preds[2], rec, z1, z2, mu1, mu2, logvar1, logvar2
@@ -1217,7 +1217,7 @@ class TDAE_VAE(nn.Module):
         mu1, mu2, logvar1, logvar2 = self.encode(input)
         z1 = self.reparameterize(mu1, logvar1)
         z2 = self.reparameterize(mu2, logvar2)
-        zs = [z1, z2]
+        zs = [mu1, mu2]
 
         classifier_preds = []
         for i in range(len(self.classifiers)):
@@ -1264,11 +1264,11 @@ class TDAE_VAE(nn.Module):
     def get_mu_net(self):
         mu_net = []
         mu_net.append(nn.Linear(in_features=self.latent_dim, out_features=self.latent_dim))
-        mu_net.append(nn.ReLU())
+        # mu_net.append(nn.ReLU())
         return nn.Sequential(*mu_net)
 
     def get_logvar_net(self):
         logvar_net = []
         logvar_net.append(nn.Linear(in_features=self.latent_dim, out_features=self.latent_dim))
-        logvar_net.append(nn.ReLU())
+        # logvar_net.append(nn.ReLU())
         return nn.Sequential(*logvar_net)
