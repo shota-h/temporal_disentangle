@@ -98,7 +98,7 @@ def make_index_rankingloss(target):
     return np.asarray(idx), np.asarray(labels)
 
 def loss_vae(recon_x, x, mu1, mu2, logvar1, logvar2):
-    BCE = F.binary_cross_entropy(recon_x, x.view(-1, 784), reduction='sum')
+    BCE = F.binary_cross_entropy(recon_x, x, reduction='sum')
 
     # see Appendix B from VAE paper:
     # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014
