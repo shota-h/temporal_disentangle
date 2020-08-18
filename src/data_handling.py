@@ -48,7 +48,6 @@ def get_flatted_data(data_dpath, trans=True):
                 targets3.extend(target3)
 
         srcs = np.asarray(srcs)
-        print(srcs)
         if srcs.max() > 1:
             srcs = srcs / 255
             # srcs = srcs / srcs.max()
