@@ -932,6 +932,161 @@ class TestNet(nn.Module):
         subnet_layers.append(nn.Linear(in_features=channel, out_features=self.latent_dim))
         subnet_layers.append(nn.ReLU())
         return nn.Sequential(*subnet_layers)
+    
+    
+class TestNet_v2(nn.Module):
+    def __init__(self, n_classes, ksize=3, img_w=256, img_h=256, channels=[3, 16, 32, 64, 128], n_decov=2, latent_dim=256, base_net='res', triplet=False):
+        super().__init__()
+        self.img_h, self.img_w = img_h, img_w
+        self.channels = channels
+        self.latent_dim = latent_dim
+        self.triplet = triplet
+        subnets = []
+        classifiers = []
+        disentangle_classifiers = []
+        dec_layers = []
+        if base_net == 'res':
+            self.enc = models.resnet18(pretrained=False)
+            self.enc = nn.Sequential(*list(self.enc.children())[:8])
+            subnet_input_dim = 512
+        else:
+            enc_layers = []
+            for i in range(len(channels)-1):
+                enc_layers.append(base_conv(channels[i], channels[i+1], ksize))
+            enc_layers.append(base_conv(channels[-1], channels[-1], ksize))
+            self.enc = nn.Sequential(*enc_layers)
+            subnet_input_dim = channels[-1]
+
+        for i in range(len(n_classes)):     
+            subnets.append(self.get_subnet(channel=subnet_input_dim, ksize=ksize, nconv=2))
+            classifiers.append(nn.Linear(in_features=latent_dim, out_features=n_classes[i]))
+        
+        for i in [1, 0]:
+            disentangle_classifiers.append(nn.Linear(in_features=latent_dim, out_features=n_classes[i]))
+                 
+        self.subnets = nn.ModuleList(subnets)
+        self.classifiers = nn.ModuleList(classifiers)
+        self.disentangle_classifiers = nn.ModuleList(disentangle_classifiers)
+
+        self.dec_fc1 = nn.Sequential(nn.Linear(in_features=latent_dim*len(n_classes), 
+                                    out_features=(self.img_w//(2**5))*(self.img_h//(2**5))*channels[-1]),
+                                    nn.ReLU())
+
+        dec_layers.append(base_deconv(channels[4], channels[4]))
+        dec_layers.append(base_conv(channels[4], channels[4], ksize, stride=1))
+        dec_layers.append(base_conv(channels[4], channels[4], ksize, stride=1))
+        for in_c, out_c in zip(channels[::-1][:-1], channels[::-1][1:]):
+            if out_c == channels[0]:
+                dec_layers.append(nn.ConvTranspose2d(in_c, out_c, 2, stride=2))
+                dec_layers.append(nn.Sigmoid())
+                break
+            dec_layers.append(base_deconv(in_c, out_c))
+            for i in range(n_decov):
+                dec_layers.append(base_conv(out_c, out_c, ksize, stride=1))
+        
+        self.dec = nn.Sequential(*dec_layers)
+        initialize_weights(self)
+
+    def forward(self, input, latent=False):
+        h0 = self.enc(input)
+        output_subnets = []
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
+
+        if latent:
+            return output_subnets[0], output_subnets[1]
+
+        output_subnets_no_grad = []
+        classifier_preds = []
+        disentangle_classifier_preds = []
+        output_subnets_no_grad.append(output_subnets[0].clone().detach())
+        output_subnets_no_grad.append(output_subnets[1].clone().detach())
+        classifier_preds.append(self.classifiers[0](output_subnets[0]))
+        classifier_preds.append(self.classifiers[1](output_subnets[1]))
+        
+        disentangle_classifier_preds.append(self.disentangle_classifiers[0](output_subnets[0]))
+        disentangle_classifier_preds.append(self.disentangle_classifiers[0](output_subnets_no_grad[0]))
+        disentangle_classifier_preds.append(self.disentangle_classifiers[1](output_subnets[1]))
+        disentangle_classifier_preds.append(self.disentangle_classifiers[1](output_subnets_no_grad[1]))
+        
+        concat_h0 = torch.cat(output_subnets, dim=1)
+        concat_h0 = self.dec_fc1(concat_h0)
+        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), self.channels[-1], self.img_h//(2**5), self.img_w//(2**5)))
+        rec = self.dec(concat_h0)
+        if self.triplet:
+            return  classifier_preds[0], classifier_preds[1], disentangle_classifier_preds[0],disentangle_classifier_preds[1], disentangle_classifier_preds[2], disentangle_classifier_preds[3], rec, output_subnets[0], output_subnets[1]
+
+        return classifier_preds[0], classifier_preds[1], disentangle_classifier_preds[0],disentangle_classifier_preds[1], disentangle_classifier_preds[2], disentangle_classifier_preds[3], rec
+
+    def predict_label(self, input):
+        h0 = self.enc(input)
+        output_subnets = []
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
+
+        classifier_preds = []
+        for i, ii in itertools.product(range(len(self.classifiers)), range(len(output_subnets))):
+            classifier_preds.append(self.classifiers[i](output_subnets[ii]))
+        
+        return torch.max(classifier_preds[0], 1), torch.max(classifier_preds[1], 1)
+
+    def hidden_output(self, input):
+        h0 = self.enc(input)
+        output_subnets = []
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
+        return output_subnets
+
+    def reconst(self, input):
+        h0 = self.enc(input)
+        output_subnets = []
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
+        
+        concat_h0 = torch.cat(output_subnets, dim=1)
+        concat_h0 = self.dec_fc1(concat_h0)
+        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), self.channels[-1], self.img_h//(2**5), self.img_w//(2**5)))
+        rec = self.dec(concat_h0)
+        return rec
+
+    def shuffle_reconst(self, input, idx1, idx2, shuffle_idx=[1, 0]):
+        h0 = self.enc(input)
+        output_subnets = []
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
+        idx = [idx1, idx2]
+        for i in range(len(output_subnets)):
+            output_subnets[i] = output_subnets[i][idx[i]]
+        concat_h0 = torch.cat(output_subnets, dim=1)
+        concat_h0 = self.dec_fc1(concat_h0)
+        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), self.channels[-1], self.img_h//(2**5), self.img_w//(2**5)))
+        rec = self.dec(concat_h0)
+        return rec
+
+    def fix_padding_reconst(self, input, which_val, pad_val):
+        h0 = self.enc(input)
+        output_subnets = []
+        for i in range(len(self.subnets)):
+            output_subnets.append(self.subnets[i](h0))
+        pad_tensor = torch.ones_like(output_subnets[which_val]) * pad_val
+
+        output_subnets[which_val] = pad_tensor
+        concat_h0 = torch.cat(output_subnets, dim=1)
+        concat_h0 = self.dec_fc1(concat_h0)
+        concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), self.channels[-1], self.img_h//(2**5), self.img_w//(2**5)))
+        rec = self.dec(concat_h0)
+        return rec
+
+    def get_subnet(self, channel, ksize, nconv):
+        subnet_layers = []
+        for i in range(nconv):
+            subnet_layers.append(base_conv(channel, channel, ksize, stride=1))
+        subnet_layers.append(nn.AvgPool2d(kernel_size=self.img_w//(2**5)))
+        subnet_layers.append(Flatten())
+        subnet_layers.append(nn.Linear(in_features=channel, out_features=self.latent_dim))
+        subnet_layers.append(nn.ReLU())
+        return nn.Sequential(*subnet_layers)
+
 
 class base_classifier(nn.Module):
     def __init__(self, n_class, ksize=3, img_w=256, img_h=256, latent_dim=256, base_net='res'):
@@ -963,3 +1118,162 @@ class base_classifier(nn.Module):
         subnet_layers.append(nn.Linear(in_features=channel, out_features=self.latent_dim))
         subnet_layers.append(nn.ReLU())
         return nn.Sequential(*subnet_layers)
+    
+    
+class TDAE_VAE(nn.Module):
+    def __init__(self, n_classes, ksize=3, img_w=256, img_h=256, channels=[3, 16, 32, 64, 128], n_decov=2, latent_dim=256, base_net='res', triplet=False):
+        super(TDAE_VAE, self).__init__()
+        self.img_h, self.img_w = img_h, img_w
+        self.channels = channels
+        self.latent_dim = latent_dim
+        self.triplet = triplet
+        subnets = []
+        classifiers = []
+        dec_layers = []
+        if base_net == 'res':
+            self.enc = models.resnet18(pretrained=False)
+            self.enc = nn.Sequential(*list(self.enc.children())[:8])
+            subnet_input_dim = 512
+        else:
+            enc_layers = []
+            for i in range(len(channels)-1):
+                enc_layers.append(base_conv(channels[i], channels[i+1], ksize))
+                
+            enc_layers.append(base_conv(channels[-1], channels[-1], ksize))
+            self.enc = nn.Sequential(*enc_layers)
+            subnet_input_dim = channels[-1]
+
+        mu_nets = []
+        logvar_nets = []
+        for i in range(len(n_classes)):     
+            subnets.append(self.get_subnet(channel=subnet_input_dim, ksize=ksize, nconv=2))
+            classifiers.append(nn.Linear(in_features=latent_dim, out_features=n_classes[0]))
+            mu_nets.append(self.get_mu_net())
+            logvar_nets.append(self.get_logvar_net())
+        self.subnets = nn.ModuleList(subnets)
+        self.classifiers = nn.ModuleList(classifiers)
+        self.mu_nets = nn.ModuleList(mu_nets)
+        self.logvar_nets = nn.ModuleList(logvar_nets)
+
+        self.dec_fc1 = nn.Sequential(nn.Linear(in_features=latent_dim*len(n_classes), 
+                                    out_features=(self.img_w//(2**5))*(self.img_h//(2**5))*channels[-1]),
+                                    nn.ReLU())
+
+        dec_layers.append(base_deconv(channels[4], channels[4]))
+        dec_layers.append(base_conv(channels[4], channels[4], ksize, stride=1))
+        dec_layers.append(base_conv(channels[4], channels[4], ksize, stride=1))
+        for in_c, out_c in zip(channels[::-1][:-1], channels[::-1][1:]):
+            if out_c == channels[0]:
+                dec_layers.append(nn.ConvTranspose2d(in_c, out_c, 2, stride=2))
+                dec_layers.append(nn.Sigmoid())
+                break
+            dec_layers.append(base_deconv(in_c, out_c))
+            for i in range(n_decov):
+                dec_layers.append(base_conv(out_c, out_c, ksize, stride=1))
+        
+        self.dec = nn.Sequential(*dec_layers)
+        initialize_weights(self)    def __init__(self):
+
+    def encode(self, input):
+        h0 = self.enc(input)
+        output_mu_nets = []
+        output_logvar_nets = []
+        for i in range(len(self.subnets)):
+            output_subnet = self.subnets[i](h0)
+            output_mu_nets.append(self.mu_nets[i](output_subnet))
+            output_logvar_nets.append(self.logvar_nets[i](output_subnet))
+        return output_mu_nets[0], output_mu_nets[1], output_logvar_nets[0], output_logvar_nets[1]
+
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5*logvar)
+        eps = torch.randn_like(std)
+        return mu + eps*std
+
+    def decode(self, z1, z2):
+        concat_h0 = torch.cat((z1, z2), dim=1)
+        dec_h0 = self.dec_fc1(concat_h0)
+        dec_h0 = torch.reshape(dec_h0, (dec_h0.size(0), self.channels[-1], self.img_h//(2**5), self.img_w//(2**5)))
+        rec = self.dec(dec_h0)
+        return rec
+
+    def forward(self, x):
+        mu, logvar = self.encode(x.view(-1, 784))
+        z = self.reparameterize(mu, logvar)
+        return self.decode(z), mu, logvar
+    
+    def forward(self, input, latent=False):
+        mu1, mu2, logvar1, logvar2 = self.encode(input)
+        z1 = self.reparameterize(mu1, logvar1)
+        z2 = self.reparameterize(mu2, logvar2)
+        if latent: return z1, z2
+
+        z2_no_grad = z2.clone().detach()
+        classifier_preds = []
+        classifier_preds.append(self.classifiers[0](z1))
+        classifier_preds.append(self.classifiers[1](z2))
+        classifier_preds.append(self.classifiers[1](z2_no_grad))
+        rec = self.decode(z1, z2)
+        if self.triplet:
+            return classifier_preds[0], classifier_preds[1], classifier_preds[2], rec, z1, z2, mu1, mu2, logvar1, logvar2
+
+        return classifier_preds[0], classifier_preds[1], classifier_preds[2], rec, mu1, mu2, logvar1, logvar2
+
+    def predict_label(self, input):
+        mu1, mu2, logvar1, logvar2 = self.encode(input)
+        z1 = self.reparameterize(mu1, logvar1)
+        z2 = self.reparameterize(mu2, logvar2)
+        zs = [z1, z2]
+
+        classifier_preds = []
+        for i in range(len(self.classifiers)):
+            classifier_preds.append(self.classifiers[i](zs[i]))
+        
+        return torch.max(classifier_preds[0], 1), torch.max(classifier_preds[1], 1)
+
+    def hidden_output(self, input):
+        mu1, mu2, logvar1, logvar2 = self.encode(input)
+        z1 = self.reparameterize(mu1, logvar1)
+        z2 = self.reparameterize(mu2, logvar2)
+        return z1, z2
+
+    def reconst(self, input):
+        mu1, mu2, logvar1, logvar2 = self.encode(input)
+        z1 = self.reparameterize(mu1, logvar1)
+        z2 = self.reparameterize(mu2, logvar2)        
+        rec = self.decode(z1, z2)
+        return rec
+
+    def shuffle_reconst(self, input, idx1, idx2, shuffle_idx=[1, 0]):
+        h0 = self.enc(input)
+        mu1, mu2, logvar1, logvar2 = self.encode(input)
+        z1 = self.reparameterize(mu1, logvar1)
+        z2 = self.reparameterize(mu2, logvar2)
+
+        zs = [z1, z2]        
+        idx = [idx1, idx2]
+        for i in range(len(zs)):
+            zs[i] = zs[i][idx[i]]
+        rec = self.decode(zs[0], zs[1])
+        return rec
+
+    def get_subnet(self, channel, ksize, nconv):
+        subnet_layers = []
+        for i in range(nconv):
+            subnet_layers.append(base_conv(channel, channel, ksize, stride=1))
+        subnet_layers.append(nn.AvgPool2d(kernel_size=self.img_w//(2**5)))
+        subnet_layers.append(Flatten())
+        subnet_layers.append(nn.Linear(in_features=channel, out_features=self.latent_dim))
+        subnet_layers.append(nn.ReLU())
+        return nn.Sequential(*subnet_layers)
+    
+    def get_mu_net(self):
+        mu_net = []
+        mu_net.append(nn.Linear(in_features=self.latent_dim, out_features=self.latent_dim))
+        mu_net.append(nn.ReLU())
+        return nn.Sequential(*mu_net)
+
+    def get_logvar_net(self):
+        logvar_net = []
+        logvar_net.append(nn.Linear(in_features=self.latent_dim, out_features=self.latent_dim))
+        logvar_net.append(nn.ReLU())
+        return nn.Sequential(*logvar_net)
