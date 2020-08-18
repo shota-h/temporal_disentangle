@@ -108,4 +108,4 @@ def loss_vae(recon_x, x, mu1, mu2, logvar1, logvar2):
     KLD1 = -0.5 * torch.sum(1 + logvar1 - mu1.pow(2) - logvar1.exp(), dim=-1)
     KLD2 = -0.5 * torch.sum(1 + logvar2 - mu2.pow(2) - logvar2.exp(), dim=-1)
     KLD = torch.mean(KLD1 + KLD2)
-    return BCE + KLD
+    return BCE + 0*KLD
