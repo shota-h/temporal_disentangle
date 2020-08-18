@@ -91,7 +91,7 @@ def argparses():
     parser.add_argument('--fill', type=str, default='hp')
     parser.add_argument('--ex', type=str, default=None)
     parser.add_argument('--classifier', type=float, default=1e-0)
-    parser.add_argument('--rec', type=float, default=1e-0)
+    parser.add_argument('--rec', type=float, default=1e-3)
     parser.add_argument('--adv', type=float, default=1e-1)
     parser.add_argument('--tri', type=float, default=1e-2)
     parser.add_argument('--margin', type=float, default=0.0)
@@ -345,19 +345,19 @@ def train_classifier():
     writer.close()
 
 
-def triplet_train_TDAE():
+def triplet_train_TDAE_VAE():
     args = argparses()
     if 'freq' in args.data:
         img_w, img_h = 256, 256
-        out_source_dpath = './reports/TDAE_freq' 
+        out_source_dpath = './reports/TDAE_VAE_freq' 
         data_path = './data/toy_data_freq_shape.hdf5'
     elif 'toy' in args.data:
         img_w, img_h = 256, 256
-        out_source_dpath = './reports/TDAE_toy' 
+        out_source_dpath = './reports/TDAE_VAE_toy' 
         data_path = './data/toy_data.hdf5'
     elif 'colon' in args.data:
         img_w, img_h = 224, 224
-        out_source_dpath = './reports/TDAE_colon'
+        out_source_dpath = './reports/TDAE_VAE_colon'
         data_path = './data/colon_renew.hdf5'
     else:
         return
@@ -387,10 +387,7 @@ def triplet_train_TDAE():
     train_loader = DataLoader(train_set, batch_size=args.batch, shuffle=True)
     val_loader = DataLoader(val_set, batch_size=args.batch, shuffle=False)
 
-    if args.d2ae:
-        model = TDAE_D2AE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels, triplet=args.triplet)
-    else:
-        model = TDAE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels)
+    model = TDAE_VAE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels, triplet=args.triplet)
     if args.ngpus > 1:
         g_list = [i for i in range(args.ngpus)]
         model = nn.DataParallel(model, device_ids=g_list)
@@ -418,10 +415,9 @@ def triplet_train_TDAE():
         criterion_reconst = Fourier_mse(img_h=img_h, img_w=img_w, mask=True, dm=args.dm, mode=args.fill)
     else:
         criterion_reconst = nn.MSELoss()
-
+    
+    criterion_vae = loss_vae
     params = list(model.parameters())
-    params_adv = list(model.classifiers[1].parameters())
-    optim_adv = optim.Adam(params_adv)
     optimizer = optim.Adam(params)
     # optimizer = optim.SGD(params, lr=0.001)
     # scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
@@ -435,67 +431,34 @@ def triplet_train_TDAE():
     for epoch in range(n_epochs):
         accs_p, acc_t = [], []
         Acc, Acc_adv, sub_Acc, sub_Acc_adv  = 0, 0, 0, 0
-        Loss, RecLoss, CLoss, CLoss_sub, TriLoss = [], [], [], [], []
+        Loss, RecLoss, CLoss, CLoss_sub, TriLoss, CSub = [], [], [], [], [], []
         for ite, (idx, p_idx, n_idx, target, sub_target) in enumerate(train_loader):
             model.train()
             model.zero_grad()
             losses = []
-            if args.d2ae:
-                (preds, preds_adv, sub_preds, sub_preds_adv, reconst, _, p0_anchor), (_, _, _, _, _, p0_pos), (_, _, _, _, _, p0_neg) = model.forward(src[idx].to(device)), model.forward(src[p_idx].to(device)), model.forward(src[n_idx].to(device))
-                loss_triplet = l_tri * criterion_triplet(p0_anchor, p0_pos, p0_neg)
-                loss_triplet.backward(retain_graph=True)
-                # preds, preds_adv, sub_preds, reconst = model.forward(src[idx].to(device))
-                loss_reconst = l_recon * criterion_reconst(reconst.to(device), src[idx].to(device))
-                loss_reconst.backward(retain_graph=True)
-                loss_sub_adv = l_adv * negative_entropy_loss(sub_preds_adv.to(device).to(device))
-                loss_sub_adv.backward(retain_graph=True)
-                loss_adv = l_adv * negative_entropy_loss(preds_adv.to(device).to(device))
-                loss_adv.backward(retain_graph=True)
-                if args.multi:
-                    for n_net in range(2):
-                        model.module.classifiers[n_net].zero_grad()
-                else:
-                    for n_net in range(2):
-                        model.classifiers[n_net].zero_grad()
-                loss_classifier_main = l_c * criterion_classifier(preds.to(device), target.to(device))
-                loss_classifier_main.backward(retain_graph=True)
-                loss_classifier_sub = l_adv * criterion_classifier(sub_preds.to(device), target.to(device))
-                loss_classifier_sub.backward(retain_graph=True)
-                optimizer.step()
-                # optimizer.zero_grad()
-                # _, _, sub_preds, _ = model.forward(in_data.to(device))
-                # optim_adv.step()
-                loss = loss_classifier_main + loss_classifier_sub + loss_adv + loss_reconst + loss_triplet + loss_sub_adv
-                
-            else:
-                (_, p0_anchor), (_, p0_pos), (_, p0_neg) = model.hidden_output(src[idx].to(device)), model.hidden_output(src[p_idx].to(device)), model.hidden_output(src[n_idx].to(device))
-                loss_triplet = l_tri * criterion_triplet(p0_anchor, p0_pos, p0_neg)
-                loss_triplet.backward(retain_graph=True)
-                losses.append(loss_triplet)
-
-                preds, preds_adv, reconst = model(src[idx].to(device))
-                loss_reconst = l_recon * criterion_reconst(reconst.to(device), src[idx].to(device))
-                loss_reconst.backward(retain_graph=True)
-                losses.append(loss_reconst)
-                
-                loss_adv = l_adv * negative_entropy_loss(preds_adv.to(device))
-                loss_adv.backward(retain_graph=True)
-                model.classifiers[0].zero_grad()
-                losses.append(loss_adv)
-                
-                loss_classifier_main = l_c * criterion_classifier(preds.to(device), target.to(device))
-                loss_classifier_main.backward(retain_graph=True)
-                losses.append(loss_classifier_main)
-
-                optimizer.step()
-                loss = 0
-                for cat_loss in losses:
-                    loss += cat_loss
+            (preds, sub_preds, preds_adv, reconst, _, p0_anchor, mu1, mu2, logvar1, logvar2), (_, _, _, _, _, p0_pos, _, _, _, _), (_, _, _, _, _, p0_neg, _, _, _, _) = model.forward(src[idx].to(device)), model.forward(src[p_idx].to(device)), model.forward(src[n_idx].to(device))
+            loss_triplet = l_tri * criterion_triplet(p0_anchor, p0_pos, p0_neg)
+            loss_triplet.backward(retain_graph=True)
+            loss_reconst = l_recon * criterion_vae(reconst.to(device), src[idx].to(device), mu1, mu2, logvar1, logvar2)
+            loss_reconst.backward(retain_graph=True)
+            loss_classifier_main = l_c * criterion_classifier(preds.to(device), target.to(device))
+            loss_classifier_main.backward(retain_graph=True)
+            loss_adv = l_adv * negative_entropy_loss(sub_preds.to(device))
+            loss_adv.backward(retain_graph=True)
+            model.classifiers[1].zero_grad()
+            loss_classifier_sub = l_c * criterion_classifier(preds_adv.to(device), target.to(device))
+            loss_classifier_sub.backward(retain_graph=True)
+            optimizer.step()
+            # optimizer.zero_grad()
+            # _, _, sub_preds, _ = model.forward(in_data.to(device))
+            # optim_adv.step()
+            loss = loss_classifier_main + loss_classifier_sub + loss_adv + loss_reconst + loss_triplet
 
             Loss.append(loss.item())
             RecLoss.append(loss_reconst.item())
             CLoss.append(loss_classifier_main.item())
             CLoss_sub.append(loss_adv.item())
+            CSub.append(loss_classifier_sub.item())
             TriLoss.append(loss_triplet.item())
             
             y_true = target.to('cpu')
@@ -506,18 +469,7 @@ def triplet_train_TDAE():
             sub_Acc += true_positive_multiclass(sub_preds, y_true)
 
         print('epoch: {} loss: {} \nAcc: {} sub Acc: {}, Acc_adv: {}, sub Acc_adv: {}'.format(epoch+1, np.mean(Loss), Acc/len(train_set), sub_Acc/len(train_set), Acc_adv/len(train_set), sub_Acc_adv/len(train_set)))
-        summary = scalars2summary(writer=writer, tags=['loss/train_all', 'loss/train_rec', 'loss/train_classifier', 'loss/train_adv', 'loss/train_triplet'], vals=[np.mean(Loss), np.mean(RecLoss), np.mean(CLoss), np.mean(CLoss_sub), np.mean(TriLoss)], epoch=epoch+1)
-        # writer.add_summary(summary, epoch+1)
-        # writer.add_scalar('summarize loss',
-        #     np.mean(Loss), epoch)
-        # writer.add_scalar('rec loss',
-        #     np.mean(RecLoss), epoch)
-        # writer.add_scalar('classifier loss',
-        #     np.mean(CLoss), epoch)
-        # writer.add_scalar('Adv loss',
-        #     np.mean(CLoss_sub), epoch)
-        # writer.add_scalar('Triplet loss',
-        #     np.mean(TriLoss), epoch)
+        summary = scalars2summary(writer=writer, tags=['loss/train_all', 'loss/train_rec', 'loss/train_classifier', 'loss/train_adv', 'loss/train_triplet', 'loss/train_classifier_sub'], vals=[np.mean(Loss), np.mean(RecLoss), np.mean(CLoss), np.mean(CLoss_sub), np.mean(TriLoss), np.mean(CSub)], epoch=epoch+1)
         
         if (epoch + 1) % args.step == 0:
             model.eval()
@@ -544,6 +496,7 @@ def triplet_train_TDAE():
                 val_r_loss = []
                 val_a_loss = []
                 val_t_loss = []
+                val_s_loss = []
                 for v_i, (idx, p_idx, n_idx, target1, target2) in enumerate(val_loader):
                     (_, t0) = model.hidden_output(src[idx].to(device))
                     t0 = t0.detach().to('cpu').numpy()
@@ -551,14 +504,12 @@ def triplet_train_TDAE():
                     Y_val1.extend(target1.detach().to('cpu').numpy())
                     Y_val2.extend(target2.detach().to('cpu').numpy())
                     if args.d2ae:
-                        (_, p0_anchor), (_, p0_pos), (_, p0_neg) = model.hidden_output(src[idx].to(device)), model.hidden_output(src[p_idx].to(device)), model.hidden_output(src[n_idx].to(device))
+                        (preds, sub_preds, preds_adv, reconst, _, p0_anchor, mu1, mu2, logvar1, logvar2), (_, _, _, _, _, p0_pos, _, _, _, _), (_, _, _, _, _, p0_neg, _, _, _, _) = model.forward(src[idx].to(device)), model.forward(src[p_idx].to(device)), model.forward(src[n_idx].to(device))
                         val_loss_triplet = l_tri * criterion_triplet(p0_anchor, p0_pos, p0_neg)
-                        (preds, preds_adv, sub_preds, sub_preds_adv, reconst, _, p0_anchor) = model.forward(src[idx].to(device))
-                        preds, sub_preds_adv, sub_preds, reconst = model(src[idx].to(device))
-                        val_loss_reconst = l_recon * criterion_reconst(reconst.to(device), src[idx].to(device))
+                        val_loss_reconst = l_recon * criterion_vae(reconst.to(device), src[idx].to(device))
                         val_loss_classifier_main = l_c * criterion_classifier(preds.to(device), target1.to(device))
                         val_loss_classifier_sub = l_adv * criterion_classifier(sub_preds.to(device), target1.to(device))
-                        val_loss_adv = l_adv * negative_entropy_loss(sub_preds_adv.to(device))
+                        val_loss_adv = l_adv * negative_entropy_loss(preds_adv.to(device))
                         val_loss = val_loss_reconst + val_loss_classifier_main + val_loss_adv + val_loss_classifier_sub + val_loss_triplet
                     else:
                         (_, p0_anchor), (_, p0_pos), (_, p0_neg) = model.hidden_output(src[idx].to(device)), model.hidden_output(src[p_idx].to(device)), model.hidden_output(src[n_idx].to(device))
@@ -574,6 +525,7 @@ def triplet_train_TDAE():
                     val_r_loss.append(val_loss_reconst.item())
                     val_a_loss.append(val_loss_adv.item())
                     val_t_loss.append(val_loss_triplet.item())
+                    val_s_loss.append(val_loss_classifier_sub.item())
                 
                 X_train = np.asarray(X_train)
                 Y_train1 = np.asarray(Y_train1)
@@ -590,8 +542,8 @@ def triplet_train_TDAE():
 
                 print('epoch: {} val loss: {}'.format(epoch+1, np.mean(val_losses)))
                 summary = scalars2summary(writer=writer,
-                    tags=['Reg/Tar1Train', 'Reg/Tar1Val', 'Reg/Tar2Train', 'Reg/Tar2Val', 'loss/val_all', 'loss/val_classifier', 'loss/val_reconst', 'loss/val_adv', 'loss/val_triplet'], 
-                    vals=[Scores_reg[0][-1], Vals_reg[0][-1], Scores_reg[1][-1], Vals_reg[1][-1], np.mean(val_losses), np.mean(val_c_loss), np.mean(val_r_loss), np.mean(val_a_loss), np.mean(val_t_loss)], epoch=epoch+1)
+                    tags=['Reg/Tar1Train', 'Reg/Tar1Val', 'Reg/Tar2Train', 'Reg/Tar2Val', 'loss/val_all', 'loss/val_classifier', 'loss/val_reconst', 'loss/val_adv', 'loss/val_triplet', 'loss/val_classifier_sub'], 
+                    vals=[Scores_reg[0][-1], Vals_reg[0][-1], Scores_reg[1][-1], Vals_reg[1][-1], np.mean(val_losses), np.mean(val_c_loss), np.mean(val_r_loss), np.mean(val_a_loss), np.mean(val_t_loss), np.mean(val_s_loss)], epoch=epoch+1)
 
                 # writer.add_scalar('val adv loss',
                 #     np.mean(val_a_loss), epoch)
@@ -641,7 +593,7 @@ def train_TDAE_VAE():
         src, targets1, targets2 = get_flatted_data(data_path)
     data_pairs = torch.utils.data.TensorDataset(src, targets1, targets2)
 
-    model = TDAE_VAE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels)
+    model = TDAE_VAE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels, triplet=args.triplet)
 
     if args.retrain:
         model.load_state_dict(torch.load('{}/param/TDAE_test_param.json'.format(out_source_dpath)))
@@ -682,8 +634,6 @@ def train_TDAE_VAE():
         criterion_reconst = nn.MSELoss()
     criterion_vae = loss_vae
     params = list(model.parameters())
-    params_adv = list(model.classifiers[1].parameters())
-    optim_adv = optim.Adam(params_adv)
     optimizer = optim.Adam(params)
     # optimizer = optim.SGD(params, lr=0.001)
     # scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
@@ -706,7 +656,7 @@ def train_TDAE_VAE():
             loss_reconst.backward(retain_graph=True)
             loss_classifier_main = l_c * criterion_classifier(preds.to(device), target.to(device))
             loss_classifier_main.backward(retain_graph=True)
-            loss_adv = l_adv * negative_entropy_loss(sub_preds.to(device).to(device))
+            loss_adv = l_adv * negative_entropy_loss(sub_preds.to(device))
             loss_adv.backward(retain_graph=True)
             model.classifiers[1].zero_grad()
             loss_classifier_sub = l_adv * criterion_classifier(preds_adv.to(device), target.to(device))
@@ -764,6 +714,7 @@ def train_TDAE_VAE():
                 val_c_loss = []
                 val_r_loss = []
                 val_a_loss = []
+                val_s_loss = []
                 for v_i, (in_data, target1, target2) in enumerate(val_loader):
                     (_, t0) = model.hidden_output(in_data.to(device))
                     t0 = t0.detach().to('cpu').numpy()
@@ -773,15 +724,16 @@ def train_TDAE_VAE():
 
                     preds, sub_preds, preds_adv, reconst, mu1, mu2, logvar1, logvar2 = model.forward(in_data.to(device))
                     val_loss_reconst = l_recon * criterion_vae(reconst.to(device), in_data.to(device), mu1, mu2, logvar1, logvar2)
-                    val_loss_classifier_main = l_adv * criterion_classifier(preds.to(device), target1.to(device))
-                    val_loss_classifier_sub = l_adv * negative_entropy_loss(sub_preds.to(device))
-                    val_loss_adv = l_adv * criterion_classifier(preds_adv.to(device), target1.to(device))
+                    val_loss_classifier_main = l_c * criterion_classifier(preds.to(device), target1.to(device))
+                    val_loss_adv = l_adv * negative_entropy_loss(sub_preds.to(device))
+                    val_loss_classifier_sub = l_adv * criterion_classifier(preds_adv.to(device), target1.to(device))
                     val_loss = val_loss_reconst + val_loss_classifier_main + val_loss_adv + val_loss_classifier_sub
 
                     val_losses.append(val_loss.item())
                     val_c_loss.append(val_loss_classifier_main.item())
                     val_r_loss.append(val_loss_reconst.item())
                     val_a_loss.append(val_loss_adv.item())
+                    val_s_loss.append(val_loss_classifier_sub.item())
             
                 X_train = np.asarray(X_train)
                 Y_train1 = np.asarray(Y_train1)
@@ -798,8 +750,8 @@ def train_TDAE_VAE():
                 Vals_reg[1].append(score_test[0])
 
                 summary = scalars2summary(writer=writer, 
-                    tags=['Reg/Tar1Train', 'Reg/Tar1Val', 'Reg/Tar2Train', 'Reg/Tar2Val', 'loss/val_all', 'loss/val_classifier', 'loss/val_reconst', 'loss/val_adv'], 
-                    vals=[Scores_reg[0][-1], Vals_reg[0][-1], Scores_reg[1][-1], Vals_reg[1][-1], np.mean(val_losses), np.mean(val_c_loss), np.mean(val_r_loss), np.mean(val_a_loss)], epoch=epoch+1)
+                    tags=['Reg/Tar1Train', 'Reg/Tar1Val', 'Reg/Tar2Train', 'Reg/Tar2Val', 'loss/val_all', 'loss/val_classifier', 'loss/val_reconst', 'loss/val_adv', 'loss/val_classifier_sub'], 
+                    vals=[Scores_reg[0][-1], Vals_reg[0][-1], Scores_reg[1][-1], Vals_reg[1][-1], np.mean(val_losses), np.mean(val_c_loss), np.mean(val_r_loss), np.mean(val_a_loss), np.mean(val_s_loss)], epoch=epoch+1)
 
                 print('epoch: {} val loss: {}'.format(epoch+1, np.mean(val_losses)))
                 writer.add_scalar('val loss',
@@ -1230,7 +1182,10 @@ def main():
     # return
     args = argparses()
     print(args)
-    train_TDAE_VAE()
+    if args.triplet:
+        triplet_train_TDAE_VAE()
+    else:
+        train_TDAE_VAE()
     val_TDAE_VAE()
     test_TDAE_VAE()
 

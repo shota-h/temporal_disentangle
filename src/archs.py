@@ -1014,9 +1014,9 @@ class TestNet_v2(nn.Module):
         concat_h0 = torch.reshape(concat_h0, (concat_h0.size(0), self.channels[-1], self.img_h//(2**5), self.img_w//(2**5)))
         rec = self.dec(concat_h0)
         if self.triplet:
-            return  classifier_preds[0], classifier_preds[1], disentangle_classifier_preds[0],disentangle_classifier_preds[1], disentangle_classifier_preds[2], disentangle_classifier_preds[3], rec, output_subnets[0], output_subnets[1]
+            return  classifier_preds[0], classifier_preds[1], disentangle_classifier_preds[0], disentangle_classifier_preds[1], disentangle_classifier_preds[2], disentangle_classifier_preds[3], rec, output_subnets[0], output_subnets[1]
 
-        return classifier_preds[0], classifier_preds[1], disentangle_classifier_preds[0],disentangle_classifier_preds[1], disentangle_classifier_preds[2], disentangle_classifier_preds[3], rec
+        return classifier_preds[0], classifier_preds[1], disentangle_classifier_preds[0], disentangle_classifier_preds[1], disentangle_classifier_preds[2], disentangle_classifier_preds[3], rec
 
     def predict_label(self, input):
         h0 = self.enc(input)
