@@ -1,3 +1,4 @@
+import copy
 import itertools
 import torch
 from torch.nn.modules import activation
@@ -1242,7 +1243,7 @@ class TDAE_VAE(nn.Module):
         mu1, mu2, logvar1, logvar2 = self.encode(input)
         z1 = self.reparameterize(mu1, logvar1)
         z2 = self.reparameterize(mu2, logvar2)        
-        rec = self.decode(z1, z2)
+        rec = self.decode(mu1, mu2)
         return rec
 
     def shuffle_reconst(self, input, idx1, idx2, shuffle_idx=[1, 0]):
@@ -1251,7 +1252,7 @@ class TDAE_VAE(nn.Module):
         z1 = self.reparameterize(mu1, logvar1)
         z2 = self.reparameterize(mu2, logvar2)
 
-        zs = [z1, z2]        
+        zs = copy.deepcopy([mu1, mu2])        
         idx = [idx1, idx2]
         for i in range(len(zs)):
             zs[i] = zs[i][idx[i]]
@@ -1265,7 +1266,7 @@ class TDAE_VAE(nn.Module):
         z2 = self.reparameterize(mu2, logvar2)
         
         pad_tensor = torch.ones_like(z1) * pad_val
-        zs = [z1, z2]
+        zs = copy.deepcopy([mu1, mu2])        
         zs[which_val] = pad_tensor
         rec = self.decode(zs[0], zs[1])
         return rec

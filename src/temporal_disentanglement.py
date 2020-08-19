@@ -438,47 +438,21 @@ def triplet_train_TDAE():
             model.train()
             model.zero_grad()
             losses = []
-            if args.d2ae:
-                (preds, sub_preds, preds_adv, reconst, _, p0_anchor), (_, _, _, _, _, p0_pos), (_, _, _, _, _, p0_neg) = model(src[idx].to(device)), model(src[p_idx].to(device)), model(src[n_idx].to(device))
-                # (_, p0_anchor), (_, p0_pos), (_, p0_neg) = model.hidden_output(src[idx].to(device)), model.hidden_output(src[p_idx].to(device)), model.hidden_output(src[n_idx].to(device))
-                loss_triplet = l_tri * criterion_triplet(p0_anchor, p0_pos, p0_neg)
-                loss_triplet.backward(retain_graph=True)
-                loss_reconst = l_recon * criterion_reconst(reconst.to(device), src[idx].to(device))
-                loss_reconst.backward(retain_graph=True)
-                loss_classifier_main = l_c * criterion_classifier(preds.to(device), target.to(device))
-                loss_classifier_main.backward(retain_graph=True)
-                loss_adv = l_adv * negative_entropy_loss(sub_preds.to(device).to(device))
-                loss_adv.backward(retain_graph=True)
-                model.classifiers[1].zero_grad()
-                loss_classifier_sub = l_adv * criterion_classifier(preds_adv.to(device), target.to(device))
-                loss_classifier_sub.backward(retain_graph=True)
-                optimizer.step()
-                loss = loss_classifier_main + loss_classifier_sub + loss_adv + loss_reconst + loss_triplet
-                
-            else:
-                (_, p0_anchor), (_, p0_pos), (_, p0_neg) = model.hidden_output(src[idx].to(device)), model.hidden_output(src[p_idx].to(device)), model.hidden_output(src[n_idx].to(device))
-                loss_triplet = l_tri * criterion_triplet(p0_anchor, p0_pos, p0_neg)
-                loss_triplet.backward(retain_graph=True)
-                losses.append(loss_triplet)
-
-                preds, preds_adv, reconst = model(src[idx].to(device))
-                loss_reconst = l_recon * criterion_reconst(reconst.to(device), src[idx].to(device))
-                loss_reconst.backward(retain_graph=True)
-                losses.append(loss_reconst)
-                
-                loss_adv = l_adv * negative_entropy_loss(preds_adv.to(device))
-                loss_adv.backward(retain_graph=True)
-                model.classifiers[0].zero_grad()
-                losses.append(loss_adv)
-                
-                loss_classifier_main = l_c * criterion_classifier(preds.to(device), target.to(device))
-                loss_classifier_main.backward(retain_graph=True)
-                losses.append(loss_classifier_main)
-
-                optimizer.step()
-                loss = 0
-                for cat_loss in losses:
-                    loss += cat_loss
+            (preds, sub_preds, preds_adv, reconst, _, p0_anchor), (_, _, _, _, _, p0_pos), (_, _, _, _, _, p0_neg) = model(src[idx].to(device)), model(src[p_idx].to(device)), model(src[n_idx].to(device))
+            # (_, p0_anchor), (_, p0_pos), (_, p0_neg) = model.hidden_output(src[idx].to(device)), model.hidden_output(src[p_idx].to(device)), model.hidden_output(src[n_idx].to(device))
+            loss_triplet = l_tri * criterion_triplet(p0_anchor, p0_pos, p0_neg)
+            loss_triplet.backward(retain_graph=True)
+            loss_reconst = l_recon * criterion_reconst(reconst.to(device), src[idx].to(device))
+            loss_reconst.backward(retain_graph=True)
+            loss_classifier_main = l_c * criterion_classifier(preds.to(device), target.to(device))
+            loss_classifier_main.backward(retain_graph=True)
+            loss_adv = l_adv * negative_entropy_loss(sub_preds.to(device).to(device))
+            loss_adv.backward(retain_graph=True)
+            model.classifiers[1].zero_grad()
+            loss_classifier_sub = l_adv * criterion_classifier(preds_adv.to(device), target.to(device))
+            loss_classifier_sub.backward(retain_graph=True)
+            optimizer.step()
+            loss = loss_classifier_main + loss_classifier_sub + loss_adv + loss_reconst + loss_triplet
 
             Loss.append(loss.item())
             RecLoss.append(loss_reconst.item())
@@ -540,24 +514,15 @@ def triplet_train_TDAE():
                     X_val.extend(t0)
                     Y_val1.extend(target1.detach().to('cpu').numpy())
                     Y_val2.extend(target2.detach().to('cpu').numpy())
-                    if args.d2ae:
-                        (preds, sub_preds, preds_adv, reconst, _, p0_anchor), (_, _, _, _, _, p0_pos), (_, _, _, _, _, p0_neg) = model(src[idx].to(device)), model(src[p_idx].to(device)), model(src[n_idx].to(device))
-                        # (_, p0_anchor), (_, p0_pos), (_, p0_neg) = model.hidden_output(src[idx].to(device)), model.hidden_output(src[p_idx].to(device)), model.hidden_output(src[n_idx].to(device))
-                        val_loss_triplet = l_tri * criterion_triplet(p0_anchor, p0_pos, p0_neg)
-                        # preds, sub_preds_adv, sub_preds, reconst = model(src[idx].to(device))
-                        val_loss_reconst = l_recon * criterion_reconst(reconst.to(device), src[idx].to(device))
-                        val_loss_classifier_main = l_c * criterion_classifier(preds.to(device), target1.to(device))
-                        val_loss_classifier_sub = l_adv * criterion_classifier(preds_adv.to(device), target1.to(device))
-                        val_loss_adv = l_adv * negative_entropy_loss(sub_preds.to(device))
-                        val_loss = val_loss_reconst + val_loss_classifier_main + val_loss_adv + val_loss_classifier_sub + val_loss_triplet
-                    else:
-                        (_, p0_anchor), (_, p0_pos), (_, p0_neg) = model.hidden_output(src[idx].to(device)), model.hidden_output(src[p_idx].to(device)), model.hidden_output(src[n_idx].to(device))
-                        val_loss_triplet = l_tri * criterion_triplet(p0_anchor, p0_pos, p0_neg)
-                        preds, preds_adv, reconst = model(src[idx].to(device))
-                        val_loss_reconst = l_recon * criterion_reconst(reconst.to(device), src[idx].to(device))
-                        val_loss_classifier_main = l_c * criterion_classifier(preds.to(device), target1.to(device))
-                        val_loss_adv = l_adv * negative_entropy_loss(preds_adv.to(device))
-                        val_loss = val_loss_classifier_main + val_loss_reconst + val_loss_triplet + val_loss_adv
+                    (preds, sub_preds, preds_adv, reconst, _, p0_anchor), (_, _, _, _, _, p0_pos), (_, _, _, _, _, p0_neg) = model(src[idx].to(device)), model(src[p_idx].to(device)), model(src[n_idx].to(device))
+                    # (_, p0_anchor), (_, p0_pos), (_, p0_neg) = model.hidden_output(src[idx].to(device)), model.hidden_output(src[p_idx].to(device)), model.hidden_output(src[n_idx].to(device))
+                    val_loss_triplet = l_tri * criterion_triplet(p0_anchor, p0_pos, p0_neg)
+                    # preds, sub_preds_adv, sub_preds, reconst = model(src[idx].to(device))
+                    val_loss_reconst = l_recon * criterion_reconst(reconst.to(device), src[idx].to(device))
+                    val_loss_classifier_main = l_c * criterion_classifier(preds.to(device), target1.to(device))
+                    val_loss_classifier_sub = l_adv * criterion_classifier(preds_adv.to(device), target1.to(device))
+                    val_loss_adv = l_adv * negative_entropy_loss(sub_preds.to(device))
+                    val_loss = val_loss_reconst + val_loss_classifier_main + val_loss_adv + val_loss_classifier_sub + val_loss_triplet
                         
                     val_losses.append(val_loss.item())
                     val_c_loss.append(val_loss_classifier_main.item())
@@ -948,39 +913,18 @@ def train_TDAE_v2():
             model.train()
             model.zero_grad()
             losses = []
-            if args.d2ae:
-                preds, sub_preds, preds_adv, reconst = model.forward(in_data.to(device))
-                loss_reconst = l_recon * criterion_reconst(reconst.to(device), in_data.to(device))
-                loss_reconst.backward(retain_graph=True)
-                loss_classifier_main = l_c * criterion_classifier(preds.to(device), target.to(device))
-                loss_classifier_main.backward(retain_graph=True)
-                loss_adv = l_adv * negative_entropy_loss(sub_preds.to(device).to(device))
-                loss_adv.backward(retain_graph=True)
-                model.classifiers[1].zero_grad()
-                loss_classifier_sub = l_adv * criterion_classifier(preds_adv.to(device), target.to(device))
-                loss_classifier_sub.backward(retain_graph=True)
-                optimizer.step()
-                loss = loss_classifier_main + loss_classifier_sub + loss_adv + loss_reconst
-                
-            else:
-                preds, preds_adv, reconst = model(in_data.to(device))
-                loss_reconst = l_recon * criterion_reconst(reconst.to(device), in_data.to(device))
-                loss_reconst.backward(retain_graph=True)
-                losses.append(loss_reconst)
-                
-                loss_adv = l_adv * negative_entropy_loss(preds_adv.to(device))
-                loss_adv.backward(retain_graph=True)
-                model.classifiers[0].zero_grad()
-                losses.append(loss_adv)
-                
-                loss_classifier_main = l_c * criterion_classifier(preds.to(device), target.to(device))
-                loss_classifier_main.backward(retain_graph=True)
-                losses.append(loss_classifier_main)
-
-                optimizer.step()
-                loss = 0
-                for cat_loss in losses:
-                    loss += cat_loss
+            preds, sub_preds, preds_adv, reconst = model.forward(in_data.to(device))
+            loss_reconst = l_recon * criterion_reconst(reconst.to(device), in_data.to(device))
+            loss_reconst.backward(retain_graph=True)
+            loss_classifier_main = l_c * criterion_classifier(preds.to(device), target.to(device))
+            loss_classifier_main.backward(retain_graph=True)
+            loss_adv = l_adv * negative_entropy_loss(sub_preds.to(device).to(device))
+            loss_adv.backward(retain_graph=True)
+            model.classifiers[1].zero_grad()
+            loss_classifier_sub = l_adv * criterion_classifier(preds_adv.to(device), target.to(device))
+            loss_classifier_sub.backward(retain_graph=True)
+            optimizer.step()
+            loss = loss_classifier_main + loss_classifier_sub + loss_adv + loss_reconst
 
             Loss.append(loss.item())
             RecLoss.append(loss_reconst.item())
@@ -1040,20 +984,13 @@ def train_TDAE_v2():
                     Y_val1.extend(target1.detach().to('cpu').numpy())
                     Y_val2.extend(target2.detach().to('cpu').numpy())
 
-                    if args.d2ae:
-                        preds, sub_preds, preds_adv, reconst = model.forward(in_data.to(device))
-                        val_loss_reconst = l_recon * criterion_reconst(reconst.to(device), in_data.to(device))
-                        val_loss_classifier_main = l_adv * criterion_classifier(preds.to(device), target1.to(device))
-                        val_loss_classifier_sub = l_adv * criterion_classifier(preds_adv.to(device), target1.to(device))
-                        val_loss_adv = l_adv * negative_entropy_loss(sub_preds.to(device))
-                        val_loss = val_loss_reconst + val_loss_classifier_main + val_loss_adv + val_loss_classifier_sub
-                    else:
-                        preds, preds_adv, reconst = model(in_data.to(device))
-                        val_loss_reconst = l_recon * criterion_reconst(reconst.to(device), in_data.to(device))
-                        val_loss_classifier_main = l_c * criterion_classifier(preds.to(device), target1.to(device))
-                        val_loss_adv = l_adv * negative_entropy_loss(preds_adv.to(device))
-                        val_loss = val_loss_classifier_main + val_loss_reconst + val_loss_adv
-                        
+                    preds, sub_preds, preds_adv, reconst = model.forward(in_data.to(device))
+                    val_loss_reconst = l_recon * criterion_reconst(reconst.to(device), in_data.to(device))
+                    val_loss_classifier_main = l_adv * criterion_classifier(preds.to(device), target1.to(device))
+                    val_loss_classifier_sub = l_adv * criterion_classifier(preds_adv.to(device), target1.to(device))
+                    val_loss_adv = l_adv * negative_entropy_loss(sub_preds.to(device))
+                    val_loss = val_loss_reconst + val_loss_classifier_main + val_loss_adv + val_loss_classifier_sub
+
                     val_losses.append(val_loss.item())
                     val_c_loss.append(val_loss_classifier_main.item())
                     val_r_loss.append(val_loss_reconst.item())

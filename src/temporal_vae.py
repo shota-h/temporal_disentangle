@@ -264,7 +264,6 @@ def triplet_train_TDAE_VAE():
             TriLoss.append(loss_triplet.item())
             
             y_true = target.to('cpu')
-            sub_y_true = sub_target.to('cpu')
             preds = preds.detach().to('cpu')
             sub_preds = preds_adv.detach().to('cpu')
             Acc += true_positive_multiclass(preds, y_true)
@@ -307,7 +306,7 @@ def triplet_train_TDAE_VAE():
                     Y_val2.extend(target2.detach().to('cpu').numpy())
                     (preds, sub_preds, preds_adv, reconst, _, p0_anchor, mu1, mu2, logvar1, logvar2), (_, _, _, _, _, p0_pos, _, _, _, _), (_, _, _, _, _, p0_neg, _, _, _, _) = model.forward(src[idx].to(device)), model.forward(src[p_idx].to(device)), model.forward(src[n_idx].to(device))
                     val_loss_triplet = l_tri * criterion_triplet(p0_anchor, p0_pos, p0_neg)
-                    val_loss_reconst = l_recon * criterion_vae(reconst.to(device), src[idx].to(device))
+                    val_loss_reconst = l_recon * criterion_vae(reconst.to(device), src[idx].to(device), mu1, mu2, logvar1, logvar2)
                     val_loss_classifier_main = l_c * criterion_classifier(preds.to(device), target1.to(device))
                     val_loss_classifier_sub = l_adv * criterion_classifier(preds_adv.to(device), target1.to(device))
                     val_loss_adv = l_adv * negative_entropy_loss(sub_preds.to(device))
@@ -689,11 +688,11 @@ def val_TDAE_VAE(zero_padding=False):
 
         for n_iter, (inputs, targets1, target2) in enumerate(train_loader):
             reconst = model.reconst(inputs.to(device))
-            s_reconst = model.shuffle_reconst(inputs.to(device), idx1=[0, 1], idx2=[1, 0])
             np_input0 = inputs[0].detach().to('cpu')
             np_input1 = inputs[1].detach().to('cpu')
             np_reconst0 = reconst[0].detach().to('cpu')
             np_reconst1 = reconst[1].detach().to('cpu')
+            s_reconst = model.shuffle_reconst(inputs.to(device), idx1=[0, 1], idx2=[1, 0])
             s_np_reconst0 = s_reconst[0].detach().to('cpu')
             s_np_reconst1 = s_reconst[1].detach().to('cpu')
             pad0_reconst = model.fix_padding_reconst(inputs.to(device), which_val=0, pad_val=0)
