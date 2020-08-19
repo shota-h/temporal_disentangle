@@ -1252,6 +1252,18 @@ class TDAE_VAE(nn.Module):
         rec = self.decode(zs[0], zs[1])
         return rec
 
+    def fix_padding_reconst(self, input, which_val, pad_val):
+        h0 = self.enc(input)
+        mu1, mu2, logvar1, logvar2 = self.encode(input)
+        z1 = self.reparameterize(mu1, logvar1)
+        z2 = self.reparameterize(mu2, logvar2)
+        
+        pad_tensor = torch.ones_like(z1) * pad_val
+        zs = [z1, z2]
+        zs[which_val] = pad_tensor
+        rec = self.decode(zs[0], zs[1])
+        return rec
+
     def get_subnet(self, channel, ksize, nconv):
         subnet_layers = []
         for i in range(nconv):
