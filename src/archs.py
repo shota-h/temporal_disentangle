@@ -1228,6 +1228,12 @@ class TDAE_VAE(nn.Module):
 
     def hidden_output(self, input):
         mu1, mu2, logvar1, logvar2 = self.encode(input)
+        # z1 = self.reparameterize(mu1, logvar1)
+        # z2 = self.reparameterize(mu2, logvar2)
+        return mu1, mu2
+
+    def sampling(self, input):
+        mu1, mu2, logvar1, logvar2 = self.encode(input)
         z1 = self.reparameterize(mu1, logvar1)
         z2 = self.reparameterize(mu2, logvar2)
         return z1, z2
