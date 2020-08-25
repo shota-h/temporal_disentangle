@@ -94,7 +94,7 @@ def argparses():
     parser.add_argument('--rec', type=float, default=1e-0)
     parser.add_argument('--adv', type=float, default=1e-1)
     parser.add_argument('--tri', type=float, default=1e-2)
-    parser.add_argument('--margin', type=float, default=1e-1)
+    parser.add_argument('--margin', type=float, default=1.0)
     parser.add_argument('--triplet', action='store_true')
     parser.add_argument('--retrain', action='store_true')
     parser.add_argument('--fou', action='store_true')
