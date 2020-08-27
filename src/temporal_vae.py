@@ -339,6 +339,10 @@ def train_TDAE_VAE_v2():
                                         tags=list(val_loss_dict.keys()), 
                                         vals=list(val_loss_dict.values()), epoch=epoch+1)
 
+                if args.ngpus > 1:
+                    torch.save(model.module.state_dict(), '{}/TDAE_param_e{:04}.json'.format(out_param_dpath, epoch+1))
+                else:
+                    torch.save(model.state_dict(), '{}/TDAE_param_e{:04}.json'.format(out_param_dpath, epoch+1))
                 if best_loss > val_loss_dict['loss/val_all']:
                     best_epoch = epoch + 1
                     best_loss = val_loss_dict['loss/val_all']
@@ -957,7 +961,8 @@ def train_TDAE_VAE_fullsuper_disentangle():
                                         vals=list(val_loss_dict.values()), epoch=epoch+1)
 
                 print('epoch: {} val loss: {}'.format(epoch+1, val_loss_dict['loss/val_all']))
-
+                torch.save(model.state_dict(), '{}/TDAE_param_e{:04}.json'.format(out_param_dpath, epoch+1))
+                    
                 if best_loss > val_loss_dict['loss/val_all']:
                     best_epoch = epoch + 1
                     best_loss = val_loss_dict['loss/val_all']
@@ -996,12 +1001,13 @@ def val_TDAE_VAE(zero_padding=False):
 
     ratio = [0.7, 0.2, 0.1]
     if args.rev:
+        out_source_dpath = out_source_dpath + '_rev'
         # srcs, targets2, targets1 = get_flatted_data(data_path)
         src, targets2, targets1, idxs = get_triplet_flatted_data_with_idx(data_path)
     else:
         # srcs, targets1, targets2 = get_flatted_data(data_path)
         src, targets1, targets2, idxs = get_triplet_flatted_data_with_idx(data_path)
-    # data_pairs = torch.utils.data.TensorDataset(srcs, targets1, targets2)
+
     data_pairs = torch.utils.data.TensorDataset(idxs[0], idxs[1], idxs[2], targets1, targets2)
     if args.full:
         model = TDAE_VAE_fullsuper_disentangle(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels, triplet=args.triplet)
@@ -1018,7 +1024,7 @@ def val_TDAE_VAE(zero_padding=False):
     n_sample = len(data_pairs)
     train_size = int(n_sample*ratio[0])
     val_size = int(n_sample*ratio[1])
-    test_size = n_sample - train_size - val_size
+    test_size = n_sample - (train_size + val_size)
     
     # train_set, val_set = torch.utils.data.random_split(data_pairs, [train_size, val_size])
     train_indices = list(range(0, train_size))
@@ -1137,7 +1143,7 @@ def val_TDAE_VAE(zero_padding=False):
     
     with torch.no_grad():
         for first, loader in zip(['train', 'val'], [train_loader, val_loader]):
-        model.eval()
+            model.eval()
             X1, X2, Y1, Y2 = [], [], [], []
             # for n_iter, (inputs, targets1, targets2) in enumerate(train_loader):
             for n_iter, (idx, _, _, target, sub_target) in enumerate(loader):
@@ -1195,7 +1201,7 @@ def val_TDAE_VAE(zero_padding=False):
                 fig.savefig('{}/{}_pca_{}.png'.format(out_fig_dpath, first, ex))
                 plt.close(fig)
                 
-                pca_idx = np.where(ratio > 0.99)[0]
+                pca_idx = np.where(ratio >= 0.99)[0]
                 cat_feature = pca_feature[:, :pca_idx[0]+1]
                 tsne = TSNE(n_components=2, random_state=SEED)
                 cat_tsne_feature = tsne.fit_transform(cat_feature)
@@ -1356,7 +1362,7 @@ def test_TDAE_VAE():
     n_sample = len(data_pairs)
     train_size = int(n_sample*ratio[0])
     val_size = int(n_sample*ratio[1])
-    test_size = n_sample - train_size - val_size
+    test_size = n_sample - (train_size + val_size)
     
     # train_set, val_set = torch.utils.data.random_split(data_pairs, [train_size, val_size])
     train_indices = list(range(0, train_size))
@@ -1392,12 +1398,12 @@ def test_TDAE_VAE():
             Y1_dict[k] = np.asarray(Y1)
             Y2_dict[k] = np.asarray(Y2)
         
-    logreg = LogisticRegression(penalty='l2', solver="sag")
     tag = ['main2main', 'main2sub', 'sub2main', 'sub2sub']
     score_dict = {}
     for itag, (X_dict, Y_dict) in enumerate(itertools.product([X1_dict, X2_dict], [Y1_dict, Y2_dict])):
         for k in ['train', 'val', 'test']:
             if k == 'train':
+                logreg = LogisticRegression(penalty='l2', solver="sag")
                 logreg.fit(X_dict[k], Y_dict[k])
                 score_reg = logreg.score(X_dict[k], Y_dict[k])
                 score_dict[tag[itag]] = [score_reg]
@@ -1416,11 +1422,9 @@ def main():
     print(args)
     if args.full:
         if args.mode == 'val':
-            # val_TDAE_VAE_fullsuper_disentangle()
             val_TDAE_VAE()
             return
         elif args.mode == 'test':
-            # test_TDAE_VAE_fullsuper_disentangle()
             test_TDAE_VAE()
             return
         elif args.mode == 'train':
@@ -1442,9 +1446,11 @@ def main():
     elif args.mode == 'train':
         train_TDAE_VAE_v2()
         return
-
+    print('call train')
     train_TDAE_VAE_v2()
+    print('call val')
     val_TDAE_VAE()
+    print('call test')
     test_TDAE_VAE()
 
 
