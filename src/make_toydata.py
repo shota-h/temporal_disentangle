@@ -10,27 +10,22 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--check', action='store_true')
 args = parser.parse_args()
 
-n_part = 3
+n_part = 2
 n_color = 2
-n_subcolor = 1
 reccrent_prob_part = .8
 reccrent_prob_color = .8
-reccrent_prob_subcolor = 1/n_subcolor
-part_list = ('ellipse', 'rectangle', 'triangle')
-color_list = (((255, 0, 0),), (((0, 255, 0), (255, 0, 0), (255, 255, 255))))
+part_list = ('ellipse', 'triangle')
+# part_list = ('ellipse', 'rectangle', 'triangle')
+color_list = ((255, 0, 0), (0, 255, 0))
 tran_prob_part = np.ones((n_part, n_part)) * (1 - reccrent_prob_part)/ (n_part - 1)
 tran_prob_color = np.ones((n_color, n_color)) * (1 - reccrent_prob_color)/ (n_color - 1)
-tran_prob_subcolor = np.ones((n_subcolor, n_subcolor)) * (1 - reccrent_prob_subcolor)/ (n_subcolor - 1)
 flatten = tran_prob_part.flatten()
 flatten[::n_part+1] = reccrent_prob_part
 tran_prob_part = np.resize(flatten, (n_part, n_part))
 flatten = tran_prob_color.flatten()
 flatten[::n_color+1] = reccrent_prob_color
 tran_prob_color = np.resize(flatten, (n_color, n_color))
-flatten = tran_prob_subcolor.flatten()
-flatten[::n_subcolor+1] = reccrent_prob_subcolor
-tran_prob_subcolor = np.resize(flatten, (n_subcolor, n_subcolor))
-n_seq = 100
+n_seq = 500
 min_len = 20
 if args.check:
     out_img = True
@@ -41,14 +36,11 @@ if os.path.exists('./data') is False:
     os.makedirs('./data')
 
 def color_shape():
-    out_dpath = './data/toy_data.hdf5'
+    out_dpath = './data/huge_toy_data.hdf5'
     with h5py.File(out_dpath, 'w') as f:
         for seq_id in range(n_seq):
             s0 = np.random.choice(n_part, size=1)[0]
             s1 = np.random.choice(n_color, size=1)[0]
-            s2 = 0
-            if s1 > 0:
-                s2 = np.random.choice(n_subcolor, size=1, p=tran_prob_subcolor[0])[0]
             continue_prob = [1.0, 0]
             seq_continue = True
             seq_len = 0
@@ -57,7 +49,7 @@ def color_shape():
                 seq_len += 1
                 img = np.full((256, 256, 3), 0, dtype=np.uint8)
                 part = part_list[s0]
-                color = color_list[s1][s2]
+                color = color_list[s1]
                 cx, cy = np.random.randint(64, 256-64, size=2) 
                 # cx, cy = 128, 128
                 dx, dy = np.random.randint(32, 64, size=2)
@@ -96,9 +88,6 @@ def color_shape():
 
                 s0 = np.random.choice(n_part, size=1, p=tran_prob_part[s0])[0]
                 s1 = np.random.choice(n_color, size=1, p=tran_prob_color[s1])[0]
-                s2 = 0
-                if s1 > 0:
-                    s2 = np.random.choice(n_subcolor, size=1, p=tran_prob_subcolor[0])[0]
                 if seq_len >= min_len:
                     # seq_continue = False
                     # continue

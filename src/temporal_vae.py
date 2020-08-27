@@ -4,6 +4,7 @@ import copy
 import json
 import itertools
 import time
+import datetime
 import argparse
 import h5py
 import cv2
@@ -39,7 +40,7 @@ from losses import TripletLoss, negative_entropy_loss, Fourier_mse, loss_vae
 from metrics import true_positive_multiclass, true_positive, true_negative
 from __init__ import clean_directory, SetIO
 from data_handling import get_triplet_flatted_data, get_flatted_data, get_triplet_flatted_data_with_idx
-# from archs import TDAE_VAE_fullsuper as TDAE_VAE
+from archs import TDAE_VAE
 from archs import TDAE_VAE_fullsuper_disentangle
 
 SEED = 1
@@ -78,7 +79,7 @@ def get_character_dataset():
 
 def argparses():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--epoch', type=int, default=300)
+    parser.add_argument('--epoch', type=int, default=1000)
     parser.add_argument('--batch', type=int, default=64)
     parser.add_argument('--dlim', type=int, default=0)
     parser.add_argument('--ndeconv', type=int, default=1)
@@ -99,6 +100,7 @@ def argparses():
     parser.add_argument('--fou', action='store_true')
     parser.add_argument('--d2ae', action='store_true')
     parser.add_argument('--rev', action='store_true')
+    parser.add_argument('--full', action='store_true')
     parser.add_argument('--ngpus', default=1)
     parser.add_argument('--channels', type=int, nargs='+', default=[3,16,32,64,128])
     return parser.parse_args()
@@ -144,6 +146,213 @@ def validate_linearclassifier(X_train, Y_train, X_tests, Y_tests):
     for X_test, Y_test in zip(X_tests, Y_tests):
         test_scores.append(logreg.score(X_test, Y_test))
     return train_score, test_scores
+
+def get_outputpath():
+    args = argparses()
+    if 'freq' in args.data:
+        img_w, img_h = 256, 256
+        out_source_dpath = './reports/TDAE_VAE_freq' 
+        data_path = './data/toy_data_freq_shape.hdf5'
+    elif 'toy' in args.data:
+        img_w, img_h = 256, 256
+        out_source_dpath = './reports/TDAE_VAE_toy' 
+        data_path = './data/toy_data.hdf5'
+    elif 'huge' in args.data:
+        img_w, img_h = 256, 256
+        out_source_dpath = './reports/TDAE_VAE_huge' 
+        data_path = './data/huge_toy_data.hdf5'
+    elif 'colon' in args.data:
+        img_w, img_h = 224, 224
+        out_source_dpath = './reports/TDAE_VAE_colon'
+        data_path = './data/colon_renew.hdf5'
+    
+    return img_w, img_h, out_source_dpath, data_path
+
+
+def train_TDAE_VAE_v2():
+    args = argparses()
+    img_w, img_h, out_source_dpath, data_path = get_outputpath()
+
+    if args.ex is None:
+        t = datetime.datetime.now()
+        t = t.strftime('%H-%M-%S')
+        out_source_dpath = out_source_dpath + '/' + t
+    else:
+        out_source_dpath = out_source_dpath + '/' + args.ex
+
+    if args.rev:
+        out_source_dpath = out_source_dpath + '_rev'
+        src, targets2, targets1, idxs = get_triplet_flatted_data_with_idx(data_path)
+    else:
+        src, targets1, targets2, idxs = get_triplet_flatted_data_with_idx(data_path)
+    data_pairs = torch.utils.data.TensorDataset(idxs[0], idxs[1], idxs[2], targets1, targets2)
+
+    ratio = [0.7, 0.2, 0.1]
+    n_sample = len(data_pairs)
+    train_size = int(n_sample*ratio[0])
+    val_size = int(n_sample*ratio[1])
+    test_size = n_sample - train_size - val_size
+
+    # train_set, val_set = torch.utils.data.random_split(data_pairs, [train_size, val_size])
+    train_indices = list(range(0, train_size))
+    val_indices = list(range(train_size, train_size+val_size))
+
+    train_set = torch.utils.data.dataset.Subset(data_pairs, train_indices)
+    val_set = torch.utils.data.dataset.Subset(data_pairs, val_indices)
+    train_loader = DataLoader(train_set, batch_size=args.batch, shuffle=True)
+    val_loader = DataLoader(val_set, batch_size=args.batch, shuffle=False)
+
+    model = TDAE_VAE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels, triplet=args.triplet)
+    if args.ngpus > 1:
+        g_list = [i for i in range(args.ngpus)]
+        model = nn.DataParallel(model, device_ids=g_list)
+    model = model.to(device)
+
+    if args.retrain:
+        model.load_state_dict(torch.load('{}/param/TDAE_test_param.json'.format(out_source_dpath)))
+        out_param_dpath = '{}/re_param'.format(out_source_dpath)
+        out_board_dpath = '{}/re_runs'.format(out_source_dpath)
+        out_condition_dpath = '{}/re_condition'.format(out_source_dpath)
+    else:
+        out_param_dpath = '{}/param'.format(out_source_dpath)
+        out_board_dpath = '{}/runs'.format(out_source_dpath)
+        out_condition_dpath = '{}/condition'.format(out_source_dpath)
+
+    clean_directory(out_param_dpath)
+    clean_directory(out_board_dpath)
+    clean_directory(out_condition_dpath)
+    writer = tbx.SummaryWriter(out_board_dpath)
+
+    # criterion_adv = nn.NLLLoss()
+    criterion_classifier = nn.CrossEntropyLoss()
+    criterion_triplet = TripletLoss(margin=args.margin)
+    if args.fou:
+        criterion_reconst = Fourier_mse(img_h=img_h, img_w=img_w, mask=True, dm=args.dm, mode=args.fill)
+    else:
+        criterion_reconst = nn.MSELoss()
+    
+    criterion_vae = loss_vae
+    params = list(model.parameters())
+    optimizer = optim.Adam(params)
+    # optimizer = optim.SGD(params, lr=0.001)
+    # scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
+    Scores_reg = [[], []]
+    Scores_reg_adv = [[], []]
+    Vals_reg = [[], []]
+    n_epochs = args.epoch
+    best_loss = np.inf
+    best_epoch = 0
+    l_adv, l_recon, l_tri, l_c = args.adv, args.rec, args.tri, args.classifier
+    train_keys = ['loss/train_all', 'loss/train_classifier_main', 'loss/train_classifier_sub', 'loss/train_adv', 'loss/train_rec', 'loss/train_triplet']
+    val_keys = ['loss/val_all', 'loss/val_classifier_main', 'loss/val_classifier_sub', 'loss/val_adv', 'loss/val_rec', 'loss/val_triplet']
+    for epoch in range(n_epochs):
+        accs_p, acc_t = [], []
+        Acc, Acc_adv, sub_Acc, sub_Acc_adv  = 0, 0, 0, 0
+        # Loss, RecLoss, CLoss, CLoss_sub, TriLoss, CSub = [], [], [], [], [], []
+        loss_dict = {}
+        for k in train_keys:
+            loss_dict[k] = []
+
+        for ite, (idx, p_idx, n_idx, target, _) in enumerate(train_loader):
+            model.train()
+            model.zero_grad()
+            losses = []
+            (preds, sub_preds, preds_adv, reconst, _, p0_anchor, mu1, mu2, logvar1, logvar2) = model.forward(src[idx].to(device))
+            if args.triplet:
+                (_, _, _, _, _, p0_pos, _, _, _, _) = model.forward(src[p_idx].to(device))
+                (_, _, _, _, _, p0_neg, _, _, _, _) = model.forward(src[n_idx].to(device))
+                loss_triplet = l_tri * criterion_triplet(p0_anchor, p0_pos, p0_neg)
+                loss_triplet.backward(retain_graph=True)
+            else:
+                loss_triplet = torch.Tensor([0])
+
+            loss_reconst = l_recon * criterion_vae(reconst.to(device), src[idx].to(device), mu1, mu2, logvar1, logvar2)
+            loss_reconst.backward(retain_graph=True)
+            loss_classifier_main = l_c * criterion_classifier(preds.to(device), target.to(device))
+            loss_classifier_main.backward(retain_graph=True)
+            loss_adv = l_adv * negative_entropy_loss(sub_preds.to(device))
+            loss_adv.backward(retain_graph=True)
+            model.classifiers[1].zero_grad()
+            loss_classifier_sub = l_c * criterion_classifier(preds_adv.to(device), target.to(device))
+            loss_classifier_sub.backward(retain_graph=True)
+            optimizer.step()
+            # optimizer.zero_grad()
+            # _, _, sub_preds, _ = model.forward(in_data.to(device))
+            # optim_adv.step()
+            loss = loss_classifier_main + loss_classifier_sub + loss_adv + loss_reconst + loss_triplet
+            for k, val in zip(train_keys, [loss.item(), loss_classifier_main.item(), loss_classifier_sub.item(), loss_adv.item(), loss_reconst.item(), loss_triplet.item()]):
+                loss_dict[k].append(val)
+            
+            y_true = target.to('cpu')
+            preds = preds.detach().to('cpu')
+            sub_preds = preds_adv.detach().to('cpu')
+            Acc += true_positive_multiclass(preds, y_true)
+            sub_Acc += true_positive_multiclass(sub_preds, y_true)
+        
+        for k in loss_dict.keys():
+            loss_dict[k] = np.mean(loss_dict[k])
+            
+        print('epoch: {} loss: {} \nAcc: {} sub Acc: {}, Acc_adv: {}, sub Acc_adv: {}'.format(epoch+1,loss_dict['loss/train_all'], Acc/len(train_set), sub_Acc/len(train_set), Acc_adv/len(train_set), sub_Acc_adv/len(train_set)))
+        summary = scalars2summary(writer=writer, tags=list(loss_dict.keys()), vals=list(loss_dict.values()), epoch=epoch+1)
+        # summary = scalars2summary(writer=writer, tags=list(loss_dict.keys()), vals=[np.mean(Loss), np.mean(RecLoss), np.mean(CLoss), np.mean(CLoss_sub), np.mean(TriLoss), np.mean(CSub)], epoch=epoch+1)
+        
+        if (epoch + 1) % args.step == 0:
+            model.eval()
+            with torch.no_grad():
+                for v_i, (idx, p_idx, n_idx, target1, target2) in enumerate(train_loader):
+                    if v_i == 0:
+                        reconst = model.reconst(src[idx].to(device))
+                        np_input = src[idx[0]].detach().to('cpu')
+                        np_reconst = reconst[0].detach().to('cpu')
+                        img_grid = make_grid(torch.stack([np_input, np_reconst]))
+                        writer.add_image('test', img_grid, epoch+1)
+                        break
+                val_loss_dict = {}
+                for k in val_keys:
+                    val_loss_dict[k] = []
+
+                for v_i, (idx, p_idx, n_idx, target1, target2) in enumerate(val_loader):
+                    (preds, sub_preds, preds_adv, reconst, _, p0_anchor, mu1, mu2, logvar1, logvar2) = model.forward(src[idx].to(device))
+                    if args.triplet:
+                        (_, _, _, _, _, p0_pos, _, _, _, _) = model.forward(src[p_idx].to(device))
+                        (_, _, _, _, _, p0_neg, _, _, _, _) = model.forward(src[n_idx].to(device))
+                        val_loss_triplet = l_tri * criterion_triplet(p0_anchor, p0_pos, p0_neg)
+                    else:
+                        val_loss_triplet = torch.Tensor([0])
+
+                    val_loss_reconst = l_recon * criterion_vae(reconst.to(device), src[idx].to(device), mu1, mu2, logvar1, logvar2)
+                    val_loss_classifier_main = l_c * criterion_classifier(preds.to(device), target1.to(device))
+                    val_loss_classifier_sub = l_adv * criterion_classifier(preds_adv.to(device), target1.to(device))
+                    val_loss_adv = l_adv * negative_entropy_loss(sub_preds.to(device))
+                    val_loss = val_loss_reconst + val_loss_classifier_main + val_loss_adv + val_loss_classifier_sub + val_loss_triplet
+                    
+                    for k, val in zip(val_keys, [val_loss, val_loss_classifier_main, val_loss_classifier_sub, val_loss_adv, val_loss_reconst, val_loss_triplet]):
+                        val_loss_dict[k].append(val.item())
+
+                for k in val_loss_dict.keys():
+                    val_loss_dict[k] = np.mean(val_loss_dict[k])
+                print('epoch: {} val loss: {}'.format(epoch+1, val_loss_dict['loss/val_all']))
+
+                summary = scalars2summary(writer=writer, tags=list(val_loss_dict.keys()), vals=list(val_loss_dict.values()), epoch=epoch+1)
+
+                if best_loss > val_loss_dict['loss/val_all']:
+                    best_epoch = epoch + 1
+                    best_loss = val_loss_dict['loss/val_all']
+                    if args.ngpus > 1:
+                        torch.save(model.module.state_dict(), '{}/TDAE_test_bestparam.json'.format(out_param_dpath))
+                    else:
+                        torch.save(model.state_dict(), '{}/TDAE_test_bestparam.json'.format(out_param_dpath))
+
+    if args.ngpus > 1:
+        torch.save(model.module.state_dict(), '{}/TDAE_test_param.json'.format(out_param_dpath))
+    else:
+        torch.save(model.state_dict(), '{}/TDAE_test_param.json'.format(out_param_dpath))
+    
+    args.best_epoch = best_epoch
+    df = args2pandas(args)
+    df.to_csv('{}/condition.csv'.format(out_condition_dpath))
+    
+    writer.close()
 
 
 def triplet_train_TDAE_VAE():
@@ -570,20 +779,22 @@ def train_TDAE_VAE():
 
 def train_TDAE_VAE_fullsuper_disentangle():
     args = argparses()
-    if 'freq' in args.data:
-        img_w, img_h = 256, 256
-        out_source_dpath = './reports/TDAE_VAE_freq' 
-        data_path = './data/toy_data_freq_shape.hdf5'
-    elif 'toy' in args.data:
-        img_w, img_h = 256, 256
-        out_source_dpath = './reports/TDAE_VAE_toy' 
-        data_path = './data/toy_data.hdf5'
-    elif 'colon' in args.data:
-        img_w, img_h = 224, 224
-        out_source_dpath = './reports/TDAE_VAE_colon'
-        data_path = './data/colon_renew.hdf5'
-    else:
-        return
+    img_w, img_h, out_source_dpath, data_path = get_outputpath()
+    # if 'freq' in args.data:
+    #     img_w, img_h = 256, 256
+    #     out_source_dpath = './reports/TDAE_VAE_freq' 
+    #     data_path = './data/toy_data_freq_shape.hdf5'
+    # elif 'toy' in args.data:
+    #     img_w, img_h = 256, 256
+    #     out_source_dpath = './reports/TDAE_VAE_toy' 
+    #     data_path = './data/toy_data.hdf5'
+    # elif 'colon' in args.data:
+    #     img_w, img_h = 224, 224
+    #     out_source_dpath = './reports/TDAE_VAE_colon'
+    #     data_path = './data/colon_renew.hdf5'
+    # else:
+    #     return
+
     if not(args.ex is None):
         out_source_dpath = os.path.join(out_source_dpath, args.ex)
 
@@ -592,10 +803,14 @@ def train_TDAE_VAE_fullsuper_disentangle():
     else:
         src, targets1, targets2 = get_flatted_data(data_path)
         
-    data_pairs = torch.utils.data.TensorDataset(src, targets1, targets2)
+    if args.rev:
+        src, targets2, targets1, idxs = get_triplet_flatted_data_with_idx(data_path)
+    else:
+        src, targets1, targets2, idxs = get_triplet_flatted_data_with_idx(data_path)
+    data_pairs = torch.utils.data.TensorDataset(idxs[0], idxs[1], idxs[2], targets1, targets2)
+        
+    # data_pairs = torch.utils.data.TensorDataset(src, targets1, targets2)
     model = TDAE_VAE_fullsuper_disentangle(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels, triplet=args.triplet)
-    # model = TDAE_VAE_fullsuper_disentangle()
-
     if args.retrain:
         model.load_state_dict(torch.load('{}/param/TDAE_test_param.json'.format(out_source_dpath)))
         out_param_dpath = '{}/re_param'.format(out_source_dpath)
@@ -634,6 +849,7 @@ def train_TDAE_VAE_fullsuper_disentangle():
     else:
         criterion_reconst = nn.MSELoss()
     criterion_vae = loss_vae
+    
     params = list(model.parameters())
     optimizer = optim.Adam(params)
     # optimizer = optim.SGD(params, lr=0.001)
@@ -644,15 +860,28 @@ def train_TDAE_VAE_fullsuper_disentangle():
     best_epoch = 0
     best_loss = np.inf
     l_adv, l_recon, l_tri, l_c = args.adv, args.rec, args.tri, args.classifier
+    train_keys = ['loss/train_all', 'loss/train_classifier_main', 'loss/train_classifier_sub', 'loss/train_adv', 'loss/train_rec', 'loss/train_triplet']
+    val_keys = ['loss/val_all', 'loss/val_classifier_main', 'loss/val_classifier_sub', 'loss/val_adv', 'loss/val_rec', 'loss/val_triplet']
     for epoch in range(n_epochs):
         accs_p, acc_t = [], []
         Acc, Acc_adv, sub_Acc, sub_Acc_adv  = 0, 0, 0, 0
-        Loss, RecLoss, LossCmain, LossCsub, LossAmain, LossAsub, LossNGmain, LossNGsub = [], [], [], [], [], [], [], []
-        for ite, (in_data, target, sub_target) in enumerate(train_loader):
+        Loss, RecLoss, LossCmain, LossCsub, LossAmain, LossAsub, LossNGmain, LossNGsub, LossT = [], [], [], [], [], [], [], [], []
+        # for ite, (in_data, target, sub_target) in enumerate(train_loader):
+        for ite, (idx, p_idx, n_idx, target, sub_target) in enumerate(train_loader):
             model.train()
             model.zero_grad()
             losses = []
-            preds, sub_preds, preds_adv, preds_adv_no_grad, sub_preds_adv, sub_preds_adv_no_grad, reconst, mu1, mu2, logvar1, logvar2 = model.forward(in_data.to(device))
+            preds, sub_preds, preds_adv, preds_adv_no_grad, sub_preds_adv, sub_preds_adv_no_grad, reconst, mu1, mu2, logvar1, logvar2 = model.forward(src[idx].to(device))
+            if args.triplet:
+                _, _, _, _, _, _, _, p_mu1, p_mu2, _, _ = model.forward(src[p_idx].to(device))
+                _, _, _, _, _, _, _, n_mu1, n_mu2, _, _ = model.forward(src[n_idx].to(device))
+                # loss_triplet = l_tri * criterion_triplet(mu1, p_mu1, n_mu1)
+                loss_triplet = l_tri * criterion_triplet(mu2, p_mu2, n_mu2)
+                loss_triplet.backward(retain_graph=True)
+                LossT.append(loss_triplet.item())
+            else:
+                loss_triplet = torch.Tensor([0])
+                
             loss_reconst = l_recon * criterion_vae(reconst.to(device), in_data.to(device), mu1, mu2, logvar1, logvar2)
             loss_reconst.backward(retain_graph=True)
             loss_classifier_main = l_c * criterion_classifier(preds.to(device), target.to(device))
@@ -670,7 +899,7 @@ def train_TDAE_VAE_fullsuper_disentangle():
             loss_sub_no_grad = l_adv * criterion_classifier(sub_preds_adv_no_grad.to(device), target.to(device))
             loss_sub_no_grad.backward(retain_graph=True)
             optimizer.step()
-            loss = loss_classifier_main + loss_classifier_sub + loss_adv_main + loss_adv_sub +  loss_reconst + loss_main_no_grad + loss_sub_no_grad
+            loss = loss_classifier_main + loss_classifier_sub + loss_adv_main + loss_adv_sub +  loss_reconst + loss_main_no_grad + loss_sub_no_grad + loss_train_triplet
 
             Loss.append(loss.item())
             RecLoss.append(loss_reconst.item())
@@ -680,6 +909,7 @@ def train_TDAE_VAE_fullsuper_disentangle():
             LossAsub.append(loss_adv_sub.item())
             LossNGmain.append(loss_adv_main.item())
             LossNGsub.append(loss_adv_sub.item())
+            LossT.append(loss_triplet)
             
             y_true = target.to('cpu')
             preds = preds.detach().to('cpu')
@@ -691,17 +921,9 @@ def train_TDAE_VAE_fullsuper_disentangle():
 
 
         summary = scalars2summary(writer=writer,
-                            tags=['loss/train_all', 'loss/train_rec', 'loss/train_classifier_main', 'loss/train_adv_main', 'loss/train_main_no_grad', 'loss/train_classifier_sub', 'loss/train_adv_sub', 'loss/train_sub_no_grad'], 
-                            vals=[np.mean(Loss), np.mean(RecLoss), np.mean(LossCmain), np.mean(LossAmain), np.mean(LossNGmain), np.mean(LossCsub), np.mean(LossAsub), np.mean(LossNGsub)], epoch=epoch+1)
-        # writer.add_scalar('summarize loss',
-        #     np.mean(Loss), epoch)
-        # writer.add_scalar('rec loss',
-        #     np.mean(RecLoss), epoch)
-        # writer.add_scalar('classifier loss',
-        #     np.mean(CLoss), epoch)
-        # writer.add_scalar('Adv loss',
-        #     np.mean(CLoss_sub), epoch)
-        
+                            tags=['loss/train_all', 'loss/train_rec', 'loss/train_classifier_main', 'loss/train_adv_main', 'loss/train_main_no_grad', 'loss/train_classifier_sub', 'loss/train_adv_sub', 'loss/train_sub_no_grad', 'loss_train_triplet'], 
+                            vals=[np.mean(Loss), np.mean(RecLoss), np.mean(LossCmain), np.mean(LossAmain), np.mean(LossNGmain), np.mean(LossCsub), np.mean(LossAsub), np.mean(LossNGsub), np.mean(LossT)], epoch=epoch+1)
+
         if (epoch + 1) % args.step == 0:
             model.eval()
             with torch.no_grad():
@@ -729,14 +951,23 @@ def train_TDAE_VAE_fullsuper_disentangle():
                 val_lossAsub = []
                 val_lossNGmain = []
                 val_lossNGsub = []
-                for v_i, (in_data, target, sub_target) in enumerate(val_loader):
-                    (_, t0) = model.hidden_output(in_data.to(device))
+                val_lossT = []
+                for v_i, (idx, p_idx, n_idx, target, sub_target) in enumerate(val_loader):
+                    (_, t0) = model.hidden_output(src[idx].to(device))
                     t0 = t0.detach().to('cpu').numpy()
                     X_val.extend(t0)
                     Y_val1.extend(target.detach().to('cpu').numpy())
                     Y_val2.extend(sub_target.detach().to('cpu').numpy())
 
-                    preds, sub_preds, preds_adv, preds_adv_no_grad, sub_preds_adv, sub_preds_adv_no_grad, reconst,  mu1, mu2, logvar1, logvar2 = model.forward(in_data.to(device))
+                    preds, sub_preds, preds_adv, preds_adv_no_grad, sub_preds_adv, sub_preds_adv_no_grad, reconst,  mu1, mu2, logvar1, logvar2 = model.forward(src[idx].to(device))
+                    if args.triplet:
+                        _, _, _, _, _, _, _,  p_mu1, p_mu2, _, _ = model.forward(src[p_idx].to(device))
+                        _, _, _, _, _, _, _,  n_mu1, n_mu2, _, _ = model.forward(src[n_idx].to(device))
+                        # val_loss_triplet = criterion_triplet(mu1, p_mu1, n_mu1)
+                        val_loss_triplet = criterion_triplet(mu2, p_mu2, n_mu2)
+                    else:
+                        val_loss_triplet = torch.Tensor([0])
+                        
                     val_loss_reconst = l_recon * criterion_vae(reconst.to(device), in_data.to(device), mu1, mu2, logvar1, logvar2)
                     val_loss_classifier_main = l_c * criterion_classifier(preds.to(device), target.to(device))
                     val_loss_classifier_sub = l_c * criterion_classifier(sub_preds.to(device), sub_target.to(device))
@@ -744,7 +975,7 @@ def train_TDAE_VAE_fullsuper_disentangle():
                     val_loss_adv_sub = l_adv * negative_entropy_loss(sub_preds_adv.to(device))
                     val_loss_no_grad_main = l_adv * criterion_classifier(preds_adv_no_grad.to(device), sub_target.to(device))
                     val_loss_no_grad_sub = l_adv * criterion_classifier(sub_preds_adv_no_grad.to(device), target.to(device))
-                    val_loss = val_loss_reconst + val_loss_classifier_main + val_loss_classifier_sub + val_loss_adv_main + val_loss_no_grad_main + val_loss_classifier_sub + val_loss_adv_sub + val_loss_no_grad_sub
+                    val_loss = val_loss_reconst + val_loss_classifier_main + val_loss_classifier_sub + val_loss_adv_main + val_loss_no_grad_main + val_loss_classifier_sub + val_loss_adv_sub + val_loss_no_grad_sub + val_loss_triplet
 
                     val_losses.append(val_loss.item())
                     val_lossR.append(val_loss_reconst.item())
@@ -754,6 +985,7 @@ def train_TDAE_VAE_fullsuper_disentangle():
                     val_lossAsub.append(val_loss_adv_sub.item())
                     val_lossNGmain.append(val_loss_no_grad_main.item())
                     val_lossNGsub.append(val_loss_no_grad_sub.item())
+                    val_lossT.append(val_loss_triplet.item())
             
                 X_train = np.asarray(X_train)
                 Y_train1 = np.asarray(Y_train1)
@@ -770,203 +1002,8 @@ def train_TDAE_VAE_fullsuper_disentangle():
                 Vals_reg[1].append(score_test[0])
 
                 summary = scalars2summary(writer=writer, 
-                    tags=['Reg/Tar1Train', 'Reg/Tar1Val', 'Reg/Tar2Train', 'Reg/Tar2Val', 'loss/val_all', 'loss/val_reconst', 'loss/val_classifier_main', 'loss/val_adv_main', 'loss/val_no_grad_main', 'loss/val_classifier_sub', 'loss/val_adv_sub', 'loss/val_no_grad_sub'], 
-                    vals=[Scores_reg[0][-1], Vals_reg[0][-1], Scores_reg[1][-1], Vals_reg[1][-1], np.mean(val_losses), np.mean(val_lossR), np.mean(val_lossCmain), np.mean(val_lossAmain), np.mean(val_lossNGsub), np.mean(val_lossCsub), np.mean(val_lossAsub), np.mean(val_lossNGsub)], epoch=epoch+1)
-
-                print('epoch: {} val loss: {}'.format(epoch+1, np.mean(val_losses)))
-
-                if best_loss > np.mean(val_losses):
-                    best_epoch = epoch + 1
-                    best_loss = np.mean(val_losses)
-                    torch.save(model.state_dict(), '{}/TDAE_test_bestparam.json'.format(out_param_dpath))
-
-    torch.save(model.state_dict(), '{}/TDAE_test_param.json'.format(out_param_dpath))
-    
-    args.best_epoch = best_epoch
-    df = args2pandas(args)
-    df.to_csv('{}/condition.csv'.format(out_condition_dpath))
-    
-    writer.close()
-
-
-def train_TDAE_VAE_fullsuper():
-    args = argparses()
-    if 'freq' in args.data:
-        img_w, img_h = 256, 256
-        out_source_dpath = './reports/TDAE_VAE_freq' 
-        data_path = './data/toy_data_freq_shape.hdf5'
-    elif 'toy' in args.data:
-        img_w, img_h = 256, 256
-        out_source_dpath = './reports/TDAE_VAE_toy' 
-        data_path = './data/toy_data.hdf5'
-    elif 'colon' in args.data:
-        img_w, img_h = 224, 224
-        out_source_dpath = './reports/TDAE_VAE_colon'
-        data_path = './data/colon_renew.hdf5'
-    else:
-        return
-    if not(args.ex is None):
-        out_source_dpath = os.path.join(out_source_dpath, args.ex)
-
-    if args.rev:
-        src, targets2, targets1 = get_flatted_data(data_path)
-    else:
-        src, targets1, targets2 = get_flatted_data(data_path)
-    data_pairs = torch.utils.data.TensorDataset(src, targets1, targets2)
-
-    model = TDAE_VAE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels, triplet=args.triplet)
-
-    if args.retrain:
-        model.load_state_dict(torch.load('{}/param/TDAE_test_param.json'.format(out_source_dpath)))
-        out_param_dpath = '{}/re_param'.format(out_source_dpath)
-        out_board_dpath = '{}/re_runs'.format(out_source_dpath)
-        out_condition_dpath = '{}/re_condition'.format(out_source_dpath)
-    else:
-        out_param_dpath = '{}/param'.format(out_source_dpath)
-        out_board_dpath = '{}/runs'.format(out_source_dpath)
-        out_condition_dpath = '{}/condition'.format(out_source_dpath)
-
-    clean_directory(out_param_dpath)
-    clean_directory(out_board_dpath)
-    clean_directory(out_condition_dpath)
-    writer = tbx.SummaryWriter(out_board_dpath)
-    model = model.to(device)
-    
-    ratio = [0.7, 0.2, 0.1]
-    n_sample = len(data_pairs)
-    train_size = int(n_sample*ratio[0])
-    val_size = int(n_sample*ratio[1])
-    test_size = n_sample - train_size - val_size
-
-    # train_set, val_set = torch.utils.data.random_split(data_pairs, [train_size, val_size])
-    train_indices = list(range(0, train_size))
-    val_indices = list(range(train_size, train_size+val_size))
-    train_set = torch.utils.data.dataset.Subset(data_pairs, train_indices)
-    val_set = torch.utils.data.dataset.Subset(data_pairs, val_indices)
-    train_loader = DataLoader(train_set, batch_size=args.batch, shuffle=True)
-    val_loader = DataLoader(val_set, batch_size=args.batch, shuffle=False)
-
-    # criterion_adv = nn.NLLLoss()
-    criterion_classifier = nn.CrossEntropyLoss()
-    criterion_triplet = TripletLoss(margin=args.margin)
-    if args.fou:
-        criterion_reconst = Fourier_mse(img_h=img_h, img_w=img_w, mask=True, dm=args.dm, mode=args.fill)
-    else:
-        criterion_reconst = nn.MSELoss()
-    criterion_vae = loss_vae
-    params = list(model.parameters())
-    optimizer = optim.Adam(params)
-    # optimizer = optim.SGD(params, lr=0.001)
-    # scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
-    Scores_reg, Scores_reg_adv = [[], []], [[], []]
-    Vals_reg = [[], []]
-    n_epochs = args.epoch
-    best_epoch = 0
-    best_loss = np.inf
-    l_adv, l_recon, l_tri, l_c = args.adv, args.rec, args.tri, args.classifier
-    for epoch in range(n_epochs):
-        accs_p, acc_t = [], []
-        Acc, Acc_adv, sub_Acc, sub_Acc_adv  = 0, 0, 0, 0
-        Loss, RecLoss, CLoss, CLoss_sub, CSub = [], [], [], [], []
-        for ite, (in_data, target, sub_target) in enumerate(train_loader):
-            model.train()
-            model.zero_grad()
-            losses = []
-            preds, sub_preds, reconst, mu1, mu2, logvar1, logvar2 = model.forward(in_data.to(device))
-            loss_reconst = l_recon * criterion_vae(reconst.to(device), in_data.to(device), mu1, mu2, logvar1, logvar2)
-            loss_reconst.backward(retain_graph=True)
-            loss_classifier_main = l_c * criterion_classifier(preds.to(device), target.to(device))
-            loss_classifier_main.backward(retain_graph=True)
-            loss_classifier_sub = l_c * criterion_classifier(sub_preds.to(device), sub_target.to(device))
-            loss_classifier_sub.backward(retain_graph=True)
-            optimizer.step()
-            loss = loss_classifier_main + loss_classifier_sub + loss_reconst
-
-            Loss.append(loss.item())
-            RecLoss.append(loss_reconst.item())
-            CLoss.append(loss_classifier_main.item())
-            CSub.append(loss_classifier_sub.item())
-            
-            y_true = target.to('cpu')
-            preds = preds.detach().to('cpu')
-            sub_preds = sub_preds.detach().to('cpu')
-            Acc += true_positive_multiclass(preds, y_true)
-            sub_Acc += true_positive_multiclass(sub_preds, y_true)
-
-        print('epoch: {} loss: {} \nAcc: {} sub Acc: {}, Acc_adv: {}, sub Acc_adv: {}'.format(epoch+1, np.mean(Loss), Acc/len(train_set), sub_Acc/len(train_set), Acc_adv/len(train_set), sub_Acc_adv/len(train_set)))
-
-
-        summary = scalars2summary(writer=writer,
-                            tags=['loss/train_all', 'loss/train_rec', 'loss/train_classifier', 'loss/train_classifier_sub'], 
-                            vals=[np.mean(Loss), np.mean(RecLoss), np.mean(CLoss), np.mean(CSub)], epoch=epoch+1)
-        # writer.add_scalar('summarize loss',
-        #     np.mean(Loss), epoch)
-        # writer.add_scalar('rec loss',
-        #     np.mean(RecLoss), epoch)
-        # writer.add_scalar('classifier loss',
-        #     np.mean(CLoss), epoch)
-        # writer.add_scalar('Adv loss',
-        #     np.mean(CLoss_sub), epoch)
-        
-        if (epoch + 1) % args.step == 0:
-            model.eval()
-            with torch.no_grad():
-                X_train = []
-                Y_train1, Y_train2 = [], []
-                for v_i, (in_data, target1, target2) in enumerate(train_loader):
-                    if v_i == 0:
-                        reconst = model.reconst(in_data.to(device))
-                        np_input = in_data[0].detach().to('cpu')
-                        np_reconst = reconst[0].detach().to('cpu')
-                        img_grid = make_grid(torch.stack([np_input, np_reconst]))
-                        writer.add_image('train example', img_grid, epoch+1)
-                    (_, t0) = model.hidden_output(in_data.to(device))
-                    t0 = t0.detach().to('cpu').numpy()
-                    X_train.extend(t0)
-                    Y_train1.extend(target1.detach().to('cpu').numpy())
-                    Y_train2.extend(target2.detach().to('cpu').numpy())
-
-                X_val, Y_val1, Y_val2 = [], [], []
-                val_losses = []
-                val_c_loss = []
-                val_r_loss = []
-                val_a_loss = []
-                val_s_loss = []
-                for v_i, (in_data, target1, target2) in enumerate(val_loader):
-                    (_, t0) = model.hidden_output(in_data.to(device))
-                    t0 = t0.detach().to('cpu').numpy()
-                    X_val.extend(t0)
-                    Y_val1.extend(target1.detach().to('cpu').numpy())
-                    Y_val2.extend(target2.detach().to('cpu').numpy())
-
-                    preds, sub_preds, reconst, mu1, mu2, logvar1, logvar2 = model.forward(in_data.to(device))
-                    val_loss_reconst = l_recon * criterion_vae(reconst.to(device), in_data.to(device), mu1, mu2, logvar1, logvar2)
-                    val_loss_classifier_main = l_c * criterion_classifier(preds.to(device), target1.to(device))
-                    val_loss_classifier_sub = l_c * criterion_classifier(sub_preds.to(device), target2.to(device))
-                    val_loss = val_loss_reconst + val_loss_classifier_main + val_loss_classifier_sub
-
-                    val_losses.append(val_loss.item())
-                    val_c_loss.append(val_loss_classifier_main.item())
-                    val_r_loss.append(val_loss_reconst.item())
-                    val_s_loss.append(val_loss_classifier_sub.item())
-            
-                X_train = np.asarray(X_train)
-                Y_train1 = np.asarray(Y_train1)
-                Y_train2 = np.asarray(Y_train2)
-                X_val = np.asarray(X_val)
-                Y_val1 = np.asarray(Y_val1)
-                Y_val2 = np.asarray(Y_val2)
-
-                score_train, score_test = validate_linearclassifier(X_train, Y_train1, [X_val], [Y_val1])
-                Scores_reg[0].append(score_train)
-                Vals_reg[0].append(score_test[0])
-                score_train, score_test = validate_linearclassifier(X_train, Y_train2, [X_val], [Y_val2])
-                Scores_reg[1].append(score_train)
-                Vals_reg[1].append(score_test[0])
-
-                summary = scalars2summary(writer=writer, 
-                    tags=['Reg/Tar1Train', 'Reg/Tar1Val', 'Reg/Tar2Train', 'Reg/Tar2Val', 'loss/val_all', 'loss/val_classifier', 'loss/val_reconst', 'loss/val_classifier_sub'], 
-                    vals=[Scores_reg[0][-1], Vals_reg[0][-1], Scores_reg[1][-1], Vals_reg[1][-1], np.mean(val_losses), np.mean(val_c_loss), np.mean(val_r_loss), np.mean(val_s_loss)], epoch=epoch+1)
+                    tags=['Reg/Tar1Train', 'Reg/Tar1Val', 'Reg/Tar2Train', 'Reg/Tar2Val', 'loss/val_all', 'loss/val_reconst', 'loss/val_classifier_main', 'loss/val_adv_main', 'loss/val_no_grad_main', 'loss/val_classifier_sub', 'loss/val_adv_sub', 'loss/val_no_grad_sub', 'loss/val_loss_triplet'], 
+                    vals=[Scores_reg[0][-1], Vals_reg[0][-1], Scores_reg[1][-1], Vals_reg[1][-1], np.mean(val_losses), np.mean(val_lossR), np.mean(val_lossCmain), np.mean(val_lossAmain), np.mean(val_lossNGsub), np.mean(val_lossCsub), np.mean(val_lossAsub), np.mean(val_lossNGsub), np.mean(val_lossT)], epoch=epoch+1)
 
                 print('epoch: {} val loss: {}'.format(epoch+1, np.mean(val_losses)))
 
@@ -988,22 +1025,23 @@ def val_TDAE_VAE(zero_padding=False):
     torch.manual_seed(SEED)
     rn.seed(SEED)
     np.random.seed(SEED)
-    
+    img_w, img_h, out_source_dpath, data_path = get_outputpath()
     args = argparses()
-    if 'freq' in args.data:
-        img_w, img_h = 256, 256
-        out_source_dpath = './reports/TDAE_VAE_freq'
-        data_path='data/toy_data_freq_shape.hdf5'
-    elif 'toy' in args.data:
-        img_w, img_h = 256, 256
-        out_source_dpath = './reports/TDAE_VAE_toy'
-        data_path='data/toy_data.hdf5'
-    elif 'colon' in args.data:
-        img_w, img_h = 224, 224
-        out_source_dpath = './reports/TDAE_VAE_colon' 
-        data_path='data/colon_renew.hdf5'
-    else:
-        return
+    # if 'freq' in args.data:
+    #     img_w, img_h = 256, 256
+    #     out_source_dpath = './reports/TDAE_VAE_freq'
+    #     data_path='data/toy_data_freq_shape.hdf5'
+    # elif 'toy' in args.data:
+    #     img_w, img_h = 256, 256
+    #     out_source_dpath = './reports/TDAE_VAE_toy'
+    #     data_path='data/toy_data.hdf5'
+    # elif 'colon' in args.data:
+    #     img_w, img_h = 224, 224
+    #     out_source_dpath = './reports/TDAE_VAE_colon' 
+    #     data_path='data/colon_renew.hdf5'
+    # else:
+    #     return
+    
     if args.ex is None:
         pass
     else:
@@ -1019,14 +1057,18 @@ def val_TDAE_VAE(zero_padding=False):
     clean_directory(out_val_dpath)
     clean_directory(out_fig_dpath)
 
-    d2ae_flag = False
+    ratio = [0.7, 0.2, 0.1]
     if args.rev:
-        srcs, targets2, targets1 = get_flatted_data(data_path)
+        # srcs, targets2, targets1 = get_flatted_data(data_path)
+        src, targets2, targets1, idxs = get_triplet_flatted_data_with_idx(data_path)
     else:
-        srcs, targets1, targets2 = get_flatted_data(data_path)
-    data_pairs = torch.utils.data.TensorDataset(srcs, targets1, targets2)
+        # srcs, targets1, targets2 = get_flatted_data(data_path)
+        src, targets1, targets2, idxs = get_triplet_flatted_data_with_idx(data_path)
+    # data_pairs = torch.utils.data.TensorDataset(srcs, targets1, targets2)
+    data_pairs = torch.utils.data.TensorDataset(idxs[0], idxs[1], idxs[2], targets1, targets2)
 
-    model = TDAE_VAE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels)
+    model = TDAE_VAE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels, triplet=args.triplet)
+
     if args.param == 'best':
         model.load_state_dict(torch.load('{}/TDAE_test_bestparam.json'.format(out_param_dpath)))
     else:
@@ -1048,237 +1090,320 @@ def val_TDAE_VAE(zero_padding=False):
     train_loader = DataLoader(train_set, batch_size=2, shuffle=True)
     val_loader = DataLoader(val_set, batch_size=2, shuffle=True)
     
-    with torch.no_grad():
-        model.eval()
-        for n_iter, (inputs, targets1, target2) in enumerate(val_loader):
-            reconst = model.reconst(inputs.to(device))
-            s_reconst = model.shuffle_reconst(inputs.to(device), idx1=[0, 1], idx2=[1, 0])
-            np_input0 = inputs[0].detach().to('cpu')
-            np_input1 = inputs[1].detach().to('cpu')
-            np_reconst0 = reconst[0].detach().to('cpu')
-            np_reconst1 = reconst[1].detach().to('cpu')
-            s_np_reconst0 = s_reconst[0].detach().to('cpu')
-            s_np_reconst1 = s_reconst[1].detach().to('cpu')
-            pad0_reconst = model.fix_padding_reconst(inputs.to(device), which_val=0, pad_val=0)
-            pad0_np_reconst0 = pad0_reconst[0].detach().to('cpu')
-            pad0_np_reconst1 = pad0_reconst[1].detach().to('cpu')
-            pad1_reconst = model.fix_padding_reconst(inputs.to(device), which_val=1, pad_val=0)
-            pad1_np_reconst0 = pad1_reconst[0].detach().to('cpu')
-            pad1_np_reconst1 = pad1_reconst[1].detach().to('cpu')
-            fig = plt.figure(figsize=(16*4, 9*2))
-            ax = fig.add_subplot(2, 5, 1)
-            ax.set_title('1')
-            ax.imshow(np.transpose(np_input0, (1,2,0)))
-            ax = fig.add_subplot(2, 5, 2)
-            ax.set_title('1')
-            ax.imshow(np.transpose(np_reconst0, (1,2,0)))
-            ax = fig.add_subplot(2, 5, 3)
-            ax.set_title('1')
-            ax.imshow(np.transpose(s_np_reconst0, (1,2,0)))
-            ax = fig.add_subplot(2, 5, 4)
-            ax.set_title('1')
-            ax.imshow(np.transpose(pad0_np_reconst0, (1,2,0)))
-            ax = fig.add_subplot(2, 5, 5)
-            ax.set_title('1')
-            ax.imshow(np.transpose(pad1_np_reconst0, (1,2,0)))
-            ax = fig.add_subplot(2, 5, 6)
-            ax.set_title('2')
-            ax.imshow(np.transpose(np_input1, (1,2,0)))
-            ax = fig.add_subplot(2, 5, 7)
-            ax.set_title('2')
-            ax.imshow(np.transpose(np_reconst1, (1,2,0)))
-            ax = fig.add_subplot(2, 5, 8)
-            ax.set_title('2')
-            ax.imshow(np.transpose(s_np_reconst1, (1,2,0)))
-            ax = fig.add_subplot(2, 5, 9)
-            ax.set_title('2')
-            ax.imshow(np.transpose(pad0_np_reconst1, (1,2,0)))
-            ax = fig.add_subplot(2, 5, 10)
-            ax.set_title('2')
-            ax.imshow(np.transpose(pad1_np_reconst1, (1,2,0)))
-            fig.savefig('{}/val_sample{:04d}.png'.format(out_val_dpath, n_iter))
-            plt.close(fig)
-            if n_iter >= 50:
-                break
+    # with torch.no_grad():
+    #     model.eval()
+    #     # for n_iter, (inputs, targets1, target2) in enumerate(val_loader):
+    #     for n_iter, (idx, _, _, _, _) in enumerate(val_loader):
+    #         reconst = model.reconst(src[idx].to(device))
+    #         s_reconst = model.shuffle_reconst(src[idx].to(device), idx1=[0, 1], idx2=[1, 0])
+    #         np_input0 = src[idx][0].detach().to('cpu')
+    #         np_input1 = src[idx][1].detach().to('cpu')
+    #         np_reconst0 = reconst[0].detach().to('cpu')
+    #         np_reconst1 = reconst[1].detach().to('cpu')
+    #         s_np_reconst0 = s_reconst[0].detach().to('cpu')
+    #         s_np_reconst1 = s_reconst[1].detach().to('cpu')
+    #         pad0_reconst = model.fix_padding_reconst(src[idx].to(device), which_val=0, pad_val=0)
+    #         pad0_np_reconst0 = pad0_reconst[0].detach().to('cpu')
+    #         pad0_np_reconst1 = pad0_reconst[1].detach().to('cpu')
+    #         pad1_reconst = model.fix_padding_reconst(src[idx].to(device), which_val=1, pad_val=0)
+    #         pad1_np_reconst0 = pad1_reconst[0].detach().to('cpu')
+    #         pad1_np_reconst1 = pad1_reconst[1].detach().to('cpu')
+    #         fig = plt.figure(figsize=(16*4, 9*2))
+    #         ax = fig.add_subplot(2, 5, 1)
+    #         ax.set_title('1')
+    #         ax.imshow(np.transpose(np_input0, (1,2,0)))
+    #         ax = fig.add_subplot(2, 5, 2)
+    #         ax.set_title('1')
+    #         ax.imshow(np.transpose(np_reconst0, (1,2,0)))
+    #         ax = fig.add_subplot(2, 5, 3)
+    #         ax.set_title('1')
+    #         ax.imshow(np.transpose(s_np_reconst0, (1,2,0)))
+    #         ax = fig.add_subplot(2, 5, 4)
+    #         ax.set_title('1')
+    #         ax.imshow(np.transpose(pad0_np_reconst0, (1,2,0)))
+    #         ax = fig.add_subplot(2, 5, 5)
+    #         ax.set_title('1')
+    #         ax.imshow(np.transpose(pad1_np_reconst0, (1,2,0)))
+    #         ax = fig.add_subplot(2, 5, 6)
+    #         ax.set_title('2')
+    #         ax.imshow(np.transpose(np_input1, (1,2,0)))
+    #         ax = fig.add_subplot(2, 5, 7)
+    #         ax.set_title('2')
+    #         ax.imshow(np.transpose(np_reconst1, (1,2,0)))
+    #         ax = fig.add_subplot(2, 5, 8)
+    #         ax.set_title('2')
+    #         ax.imshow(np.transpose(s_np_reconst1, (1,2,0)))
+    #         ax = fig.add_subplot(2, 5, 9)
+    #         ax.set_title('2')
+    #         ax.imshow(np.transpose(pad0_np_reconst1, (1,2,0)))
+    #         ax = fig.add_subplot(2, 5, 10)
+    #         ax.set_title('2')
+    #         ax.imshow(np.transpose(pad1_np_reconst1, (1,2,0)))
+    #         fig.savefig('{}/val_sample{:04d}.png'.format(out_val_dpath, n_iter))
+    #         plt.close(fig)
+    #         if n_iter >= 50:
+    #             break
 
-        for n_iter, (inputs, targets1, target2) in enumerate(train_loader):
-            reconst = model.reconst(inputs.to(device))
-            np_input0 = inputs[0].detach().to('cpu')
-            np_input1 = inputs[1].detach().to('cpu')
-            np_reconst0 = reconst[0].detach().to('cpu')
-            np_reconst1 = reconst[1].detach().to('cpu')
-            s_reconst = model.shuffle_reconst(inputs.to(device), idx1=[0, 1], idx2=[1, 0])
-            s_np_reconst0 = s_reconst[0].detach().to('cpu')
-            s_np_reconst1 = s_reconst[1].detach().to('cpu')
-            pad0_reconst = model.fix_padding_reconst(inputs.to(device), which_val=0, pad_val=0)
-            pad0_np_reconst0 = pad0_reconst[0].detach().to('cpu')
-            pad0_np_reconst1 = pad0_reconst[1].detach().to('cpu')
-            pad1_reconst = model.fix_padding_reconst(inputs.to(device), which_val=1, pad_val=0)
-            pad1_np_reconst0 = pad1_reconst[0].detach().to('cpu')
-            pad1_np_reconst1 = pad1_reconst[1].detach().to('cpu')
-            fig = plt.figure(figsize=(16*4, 9*2))
-            ax = fig.add_subplot(2, 5, 1)
-            ax.set_title('1')
-            ax.imshow(np.transpose(np_input0, (1,2,0)))
-            ax = fig.add_subplot(2, 5, 2)
-            ax.set_title('1')
-            ax.imshow(np.transpose(np_reconst0, (1,2,0)))
-            ax = fig.add_subplot(2, 5, 3)
-            ax.set_title('1')
-            ax.imshow(np.transpose(s_np_reconst0, (1,2,0)))
-            ax = fig.add_subplot(2, 5, 4)
-            ax.set_title('1')
-            ax.imshow(np.transpose(pad0_np_reconst0, (1,2,0)))
-            ax = fig.add_subplot(2, 5, 5)
-            ax.set_title('1')
-            ax.imshow(np.transpose(pad1_np_reconst0, (1,2,0)))
-            ax = fig.add_subplot(2, 5, 6)
-            ax.set_title('2')
-            ax.imshow(np.transpose(np_input1, (1,2,0)))
-            ax = fig.add_subplot(2, 5, 7)
-            ax.set_title('2')
-            ax.imshow(np.transpose(np_reconst1, (1,2,0)))
-            ax = fig.add_subplot(2, 5, 8)
-            ax.set_title('2')
-            ax.imshow(np.transpose(s_np_reconst1, (1,2,0)))
-            ax = fig.add_subplot(2, 5, 9)
-            ax.set_title('2')
-            ax.imshow(np.transpose(pad0_np_reconst1, (1,2,0)))
-            ax = fig.add_subplot(2, 5, 10)
-            ax.set_title('2')
-            ax.imshow(np.transpose(pad1_np_reconst1, (1,2,0)))
-            fig.savefig('{}/train_sample{:04d}.png'.format(out_val_dpath, n_iter))
-            plt.close(fig)
-            if n_iter >= 50:
-                break
+    #     for n_iter, (inputs, targets1, target2) in enumerate(train_loader):
+    #     for n_iter, (idx, _, _, _, _) in enumerate(train_loader):
+    #         reconst = model.reconst(src[idx].to(device))
+    #         np_input0 = src[idx][0].detach().to('cpu')
+    #         np_input1 = src[idx][1].detach().to('cpu')
+    #         np_reconst0 = reconst[0].detach().to('cpu')
+    #         np_reconst1 = reconst[1].detach().to('cpu')
+    #         s_reconst = model.shuffle_reconst(src[idx].to(device), idx1=[0, 1], idx2=[1, 0])
+    #         s_np_reconst0 = s_reconst[0].detach().to('cpu')
+    #         s_np_reconst1 = s_reconst[1].detach().to('cpu')
+    #         pad0_reconst = model.fix_padding_reconst(src[idx].to(device), which_val=0, pad_val=0)
+    #         pad0_np_reconst0 = pad0_reconst[0].detach().to('cpu')
+    #         pad0_np_reconst1 = pad0_reconst[1].detach().to('cpu')
+    #         pad1_reconst = model.fix_padding_reconst(src[idx].to(device), which_val=1, pad_val=0)
+    #         pad1_np_reconst0 = pad1_reconst[0].detach().to('cpu')
+    #         pad1_np_reconst1 = pad1_reconst[1].detach().to('cpu')
+    #         fig = plt.figure(figsize=(16*4, 9*2))
+    #         ax = fig.add_subplot(2, 5, 1)
+    #         ax.set_title('1')
+    #         ax.imshow(np.transpose(np_input0, (1,2,0)))
+    #         ax = fig.add_subplot(2, 5, 2)
+    #         ax.set_title('1')
+    #         ax.imshow(np.transpose(np_reconst0, (1,2,0)))
+    #         ax = fig.add_subplot(2, 5, 3)
+    #         ax.set_title('1')
+    #         ax.imshow(np.transpose(s_np_reconst0, (1,2,0)))
+    #         ax = fig.add_subplot(2, 5, 4)
+    #         ax.set_title('1')
+    #         ax.imshow(np.transpose(pad0_np_reconst0, (1,2,0)))
+    #         ax = fig.add_subplot(2, 5, 5)
+    #         ax.set_title('1')
+    #         ax.imshow(np.transpose(pad1_np_reconst0, (1,2,0)))
+    #         ax = fig.add_subplot(2, 5, 6)
+    #         ax.set_title('2')
+    #         ax.imshow(np.transpose(np_input1, (1,2,0)))
+    #         ax = fig.add_subplot(2, 5, 7)
+    #         ax.set_title('2')
+    #         ax.imshow(np.transpose(np_reconst1, (1,2,0)))
+    #         ax = fig.add_subplot(2, 5, 8)
+    #         ax.set_title('2')
+    #         ax.imshow(np.transpose(s_np_reconst1, (1,2,0)))
+    #         ax = fig.add_subplot(2, 5, 9)
+    #         ax.set_title('2')
+    #         ax.imshow(np.transpose(pad0_np_reconst1, (1,2,0)))
+    #         ax = fig.add_subplot(2, 5, 10)
+    #         ax.set_title('2')
+    #         ax.imshow(np.transpose(pad1_np_reconst1, (1,2,0)))
+    #         fig.savefig('{}/train_sample{:04d}.png'.format(out_val_dpath, n_iter))
+    #         plt.close(fig)
+    #         if n_iter >= 50:
+    #             break
     
     with torch.no_grad():
         model.eval()
         X_train1, X_train2, Y_train1, Y_train2 = [], [], [], []
-        train_hf = []
-        for n_iter, (inputs, targets1, targets2) in enumerate(train_loader):
-            (h0, t0) = model.hidden_output(inputs.to(device))
-            h0 = h0.detach().to('cpu').numpy()
-            t0 = t0.detach().to('cpu').numpy()
-            # ht = np.append(h0, t0, axis=0)
-            X_train1.extend(h0)
-            X_train2.extend(t0)
-            Y_train1.extend(targets1.detach().to('cpu').numpy())
-            Y_train2.extend(targets2.detach().to('cpu').numpy())
+        # for n_iter, (inputs, targets1, targets2) in enumerate(train_loader):
+        for n_iter, (idx, _, _, target, sub_target) in enumerate(train_loader):
+            (mu1, mu2) = model.hidden_output(src[idx].to(device))
+            mu1 = mu1.detach().to('cpu').numpy()
+            mu2 = mu2.detach().to('cpu').numpy()
+            X_train1.extend(mu1)
+            X_train2.extend(mu2)
+            Y_train1.extend(target.detach().to('cpu').numpy())
+            Y_train2.extend(sub_target.detach().to('cpu').numpy())
     
-        X_train1 = np.asarray(X_train1)
-        X_train2 = np.asarray(X_train2)
-        Y_train1 = np.asarray(Y_train1)
-        Y_train2 = np.asarray(Y_train2)
-        rn.seed(SEED)
-        np.random.seed(SEED)
-        tsne = TSNE(n_components=2, random_state=SEED)
-        X_train1 = tsne.fit_transform(X_train1)
-        X_train2 = tsne.fit_transform(X_train2)
+    X_train1 = np.asarray(X_train1)
+    X_train2 = np.asarray(X_train2)
+    Y_train1 = np.asarray(Y_train1)
+    Y_train2 = np.asarray(Y_train2)
+    print(X_train1.shape)
+    # logreg = LogisticRegression(solver="sag")
+    # tag = ['main2main', 'main2sub', 'sub2main', 'sub2sub']
+    # logreg.fit(X_train1, Y_train1)
+    # score_reg = logreg.score(X_train1, Y_train1)
+    # print(score_reg)
+    # for X, Y in itertools.product([X1, X2], [Y1, Y2]):
+    #     logreg.fit(X[0], Y[0])
+    #     score_reg = logreg.score(X[0], Y[0])
+    #     print(tag[i])
+    #     print('train-------------------------------')
+    #     score_dict[tag[i]] = [score_reg]
+    #     print(score_reg)
+    #     l = logreg.predict_proba(X[0])
 
-        picK_idx = [2*i+j for i in range(20) for j in [0, 1]]
-        fig = plt.figure(figsize=(16*2, 9))
-        ax = fig.add_subplot(1,2,1)
-        for k in np.unique(Y_train1):
-            ax.scatter(x=X_train1[Y_train1==k,0], y=X_train1[Y_train1==k,1], marker='.', alpha=0.5)
-        ax.scatter(x=X_train1[picK_idx,0], y=X_train1[picK_idx,1], color='red', marker='x')
-        for txt in picK_idx:
-            ax.annotate(txt, (X_train1[txt, 0], X_train1[txt, 1]))
-        ax.set_aspect('equal', 'datalim')
-        ax = fig.add_subplot(1,2,2)
-        for k in np.unique(Y_train2):
-            ax.scatter(x=X_train1[Y_train2==k,0], y=X_train1[Y_train2==k,1], marker='.', alpha=0.5)
-        ax.scatter(x=X_train1[picK_idx,0], y=X_train1[picK_idx,1], color='red', marker='x')
-        for txt in picK_idx:
-            ax.annotate(txt, (X_train1[txt, 0], X_train1[txt, 1]))
-        ax.set_aspect('equal', 'datalim')
-        fig.savefig('{}/train_hidden_features_main.png'.format(out_fig_dpath))
-        plt.close(fig)
+    rn.seed(SEED)
+    np.random.seed(SEED)
+    tsne = TSNE(n_components=2, random_state=SEED)
+    Xt1 = tsne.fit_transform(X_train1)
 
-        fig = plt.figure(figsize=(16*2, 9))
-        ax = fig.add_subplot(1,2,1)
-        for k in np.unique(Y_train1):
-            ax.scatter(x=X_train2[Y_train1==k,0], y=X_train2[Y_train1==k,1], marker='.', alpha=0.5)
-        ax.scatter(x=X_train2[picK_idx,0], y=X_train2[picK_idx,1], color='red', marker='x')
-        for txt in picK_idx:
-            ax.annotate(txt, (X_train2[txt, 0], X_train2[txt, 1]))
-        ax.set_aspect('equal', 'datalim')
-        ax = fig.add_subplot(1,2,2)
-        for k in np.unique(Y_train2):
-            ax.scatter(x=X_train2[Y_train2==k,0], y=X_train2[Y_train2==k,1], marker='.', alpha=0.5)
-        ax.scatter(x=X_train2[picK_idx,0], y=X_train2[picK_idx,1], color='red', marker='x')
-        for txt in picK_idx:
-            ax.annotate(txt, (X_train2[txt, 0], X_train2[txt, 1]))
-        ax.set_aspect('equal', 'datalim')
-        fig.savefig('{}/train_hidden_features_sub.png'.format(out_fig_dpath))
-        plt.close(fig)
+    
+    fig = plt.figure(figsize=(6*2, 6))
+    ax = fig.add_subplot(1,2,1)
+    ax.hist(np.mean(X_train1, axis=0))
+    ax = fig.add_subplot(1,2,2)
+    ax.hist(np.std(X_train1, axis=0))
+    fig.savefig('{}/dist_main.png'.format(out_fig_dpath))
+    plt.close(fig)
 
+    Xn1 = (X_train1 - np.mean(X_train1, axis=0)) / np.std(X_train1, axis=0) 
+    pca = PCA()
+    pca.fit(Xn1)
+    fig = plt.figure(figsize=(6, 6))
+    ax = fig.add_subplot(1,1,1)
+    ratio = np.append([0], np.cumsum(pca.explained_variance_ratio_))
+    ax.plot(ratio)
+    fig.savefig('{}/ratio_main.png'.format(out_fig_dpath))
+    plt.close(fig)
+    # print(pca.explained_variance_ratio_)
+    pca_feature = pca.transform(X_train1)
+    fig = plt.figure(figsize=(16*2, 9))
+    for ia, Y in enumerate([Y_train1, Y_train2]):
+        ax = fig.add_subplot(1,2,ia+1)
+        for k in np.unique(Y):
+            ax.scatter(pca_feature[Y==k, 0], pca_feature[Y==k, 1], alpha=0.8, marker='.')
+            ax.set_aspect('equal', 'datalim')
+    fig.savefig('{}/train_pca_main.png'.format(out_fig_dpath))
+    plt.close(fig)
+
+    fig = plt.figure(figsize=(6*2, 6))
+    ax = fig.add_subplot(1,2,1)
+    ax.hist(np.mean(X_train2, axis=0))
+    ax = fig.add_subplot(1,2,2)
+    ax.hist(np.std(X_train2, axis=0))
+    fig.savefig('{}/dist_sub.png'.format(out_fig_dpath))
+    plt.close(fig)
+
+    Xn2 = (X_train2 - np.mean(X_train2, axis=0)) / np.std(X_train2, axis=0) 
+    pca = PCA()
+    pca.fit(Xn2)
+    fig = plt.figure(figsize=(6, 6))
+    ax = fig.add_subplot(1,1,1)
+    ratio = np.append([0], np.cumsum(pca.explained_variance_ratio_))
+    ax.plot(ratio)
+    fig.savefig('{}/ratio_sub.png'.format(out_fig_dpath))
+    plt.close(fig)
+
+    # print(pca.explained_variance_ratio_)
+    pca_feature = pca.transform(X_train2)
+    fig = plt.figure(figsize=(16*2, 9))
+    for ia, Y in enumerate([Y_train1, Y_train2]):
+        ax = fig.add_subplot(1,2,ia+1)
+        for k in np.unique(Y):
+            ax.scatter(pca_feature[Y==k, 0], pca_feature[Y==k, 1], alpha=0.8, marker='.')
+            ax.set_aspect('equal', 'datalim')
+    fig.savefig('{}/train_pca_sub.png'.format(out_fig_dpath))
+    plt.close(fig)
+
+    # picK_idx = [2*i+j for i in range(20) for j in [0, 1]]
+    fig = plt.figure(figsize=(16*2, 9))
+    ax = fig.add_subplot(1,2,1)
+    for k in np.unique(Y_train1):
+        ax.scatter(x=Xt1[Y_train1==k,0], y=Xt1[Y_train1==k,1], marker='.', alpha=0.5)
+    # ax.scatter(x=X_train1[picK_idx,0], y=X_train1[picK_idx,1], color='red', marker='x')
+    # for txt in picK_idx:
+    #     ax.annotate(txt, (X_train1[txt, 0], X_train1[txt, 1]))
+    ax.set_aspect('equal', 'datalim')
+    ax = fig.add_subplot(1,2,2)
+    for k in np.unique(Y_train2):
+        ax.scatter(x=Xt1[Y_train2==k,0], y=Xt1[Y_train2==k,1], marker='.', alpha=0.5)
+    # ax.scatter(x=X_train1[picK_idx,0], y=X_train1[picK_idx,1], color='red', marker='x')
+    # for txt in picK_idx:
+    #     ax.annotate(txt, (X_train1[txt, 0], X_train1[txt, 1]))
+    ax.set_aspect('equal', 'datalim')
+    fig.savefig('{}/train_hidden_features_main.png'.format(out_fig_dpath))
+    plt.close(fig)
+
+    rn.seed(SEED)
+    np.random.seed(SEED)
+    tsne = TSNE(n_components=2, random_state=SEED)
+    Xt2 = tsne.fit_transform(X_train2)
+
+    fig = plt.figure(figsize=(16*2, 9))
+    ax = fig.add_subplot(1,2,1)
+    for k in np.unique(Y_train1):
+        ax.scatter(x=Xt2[Y_train1==k,0], y=Xt2[Y_train1==k,1], marker='.', alpha=0.5)
+    # ax.scatter(x=X_train2[picK_idx,0], y=X_train2[picK_idx,1], color='red', marker='x')
+    # for txt in picK_idx:
+    #     ax.annotate(txt, (X_train2[txt, 0], X_train2[txt, 1]))
+    ax.set_aspect('equal', 'datalim')
+    ax = fig.add_subplot(1,2,2)
+    for k in np.unique(Y_train2):
+        ax.scatter(x=Xt2[Y_train2==k,0], y=Xt2[Y_train2==k,1], marker='.', alpha=0.5)
+    # ax.scatter(x=X_train2[picK_idx,0], y=X_train2[picK_idx,1], color='red', marker='x')
+    # for txt in picK_idx:
+    #     ax.annotate(txt, (X_train2[txt, 0], X_train2[txt, 1]))
+    ax.set_aspect('equal', 'datalim')
+    fig.savefig('{}/train_hidden_features_sub.png'.format(out_fig_dpath))
+    plt.close(fig)
+
+    return
+
+    with torch.no_grad():
+        model.eval()
         X1, X2, Y1, Y2 = [], [], [], []
-        train_hf = []
-        for n_iter, (inputs, targets1, targets2) in enumerate(val_loader):
-            (h0, t0) = model.hidden_output(inputs.to(device))
-            h0 = h0.detach().to('cpu').numpy()
-            t0 = t0.detach().to('cpu').numpy()
-            X1.extend(h0)
-            X2.extend(t0)
-            Y1.extend(targets1.detach().to('cpu').numpy())
-            Y2.extend(targets2.detach().to('cpu').numpy())
+        # for n_iter, (inputs, targets1, targets2) in enumerate(val_loader):
+        for n_iter, (idx, _, _, target, sub_target) in enumerate(val_loader):
+            (mu1, mu2) = model.hidden_output(src[idx].to(device))
+            mu1 = mu1.detach().to('cpu').numpy()
+            mu2 = mu2.detach().to('cpu').numpy()
+            X1.extend(mu1)
+            X2.extend(mu2)
+            Y1.extend(target.detach().to('cpu').numpy())
+            Y2.extend(sub_target.detach().to('cpu').numpy())
     
-        X1 = np.asarray(X1)
-        X2 = np.asarray(X2)
-        Y1 = np.asarray(Y1)
-        Y2 = np.asarray(Y2)
-        rn.seed(SEED)
-        np.random.seed(SEED)
-        tsne = TSNE(n_components=2, random_state=SEED)
-        X1 = tsne.fit_transform(X1)
-        X2 = tsne.fit_transform(X2)
+    X1 = np.asarray(X1)
+    X2 = np.asarray(X2)
+    Y1 = np.asarray(Y1)
+    Y2 = np.asarray(Y2)
+    rn.seed(SEED)
+    np.random.seed(SEED)
+    tsne = TSNE(n_components=2, random_state=SEED)
+    X1 = tsne.fit_transform(X1)
+    X2 = tsne.fit_transform(X2)
 
-        fig = plt.figure(figsize=(16*2, 9))
-        ax = fig.add_subplot(1,2,1)
-        for k in np.unique(Y1):
-            ax.scatter(x=X2[Y1==k,0], y=X2[Y1==k,1], marker='.', alpha=0.5)
-        ax.set_aspect('equal', 'datalim')
-        ax = fig.add_subplot(1,2,2)
-        for k in np.unique(Y2):
-            ax.scatter(x=X2[Y2==k,0], y=X2[Y2==k,1], marker='.', alpha=0.5)
-        ax.set_aspect('equal', 'datalim')
-        fig.savefig('{}/val_hidden_features_sub.png'.format(out_fig_dpath))
-        plt.close(fig)
+    fig = plt.figure(figsize=(16*2, 9))
+    ax = fig.add_subplot(1,2,1)
+    for k in np.unique(Y1):
+        ax.scatter(x=X2[Y1==k,0], y=X2[Y1==k,1], marker='.', alpha=0.5)
+    ax.set_aspect('equal', 'datalim')
+    ax = fig.add_subplot(1,2,2)
+    for k in np.unique(Y2):
+        ax.scatter(x=X2[Y2==k,0], y=X2[Y2==k,1], marker='.', alpha=0.5)
+    ax.set_aspect('equal', 'datalim')
+    fig.savefig('{}/val_hidden_features_sub.png'.format(out_fig_dpath))
+    plt.close(fig)
 
-        fig = plt.figure(figsize=(16*2, 9))
-        ax = fig.add_subplot(1,2,1)
-        for k in np.unique(Y1):
-            ax.scatter(x=X1[Y1==k,0], y=X1[Y1==k,1], marker='.', alpha=0.5)
-        ax.set_aspect('equal', 'datalim')
-        ax = fig.add_subplot(1,2,2)
-        for k in np.unique(Y2):
-            ax.scatter(x=X1[Y2==k,0], y=X1[Y2==k,1], marker='.', alpha=0.5)
-        ax.set_aspect('equal', 'datalim')
-        fig.savefig('{}/val_hidden_features_main.png'.format(out_fig_dpath))
-        plt.close(fig)
+    fig = plt.figure(figsize=(16*2, 9))
+    ax = fig.add_subplot(1,2,1)
+    for k in np.unique(Y1):
+        ax.scatter(x=X1[Y1==k,0], y=X1[Y1==k,1], marker='.', alpha=0.5)
+    ax.set_aspect('equal', 'datalim')
+    ax = fig.add_subplot(1,2,2)
+    for k in np.unique(Y2):
+        ax.scatter(x=X1[Y2==k,0], y=X1[Y2==k,1], marker='.', alpha=0.5)
+    ax.set_aspect('equal', 'datalim')
+    fig.savefig('{}/val_hidden_features_main.png'.format(out_fig_dpath))
+    plt.close(fig)
 
 
 def val_TDAE_VAE_fullsuper_disentangle(zero_padding=False):
+    img_w, img_h, out_source_dpath, data_path = get_outputpath()
     torch.manual_seed(SEED)
     rn.seed(SEED)
     np.random.seed(SEED)
-    
+
     args = argparses()
-    if 'freq' in args.data:
-        img_w, img_h = 256, 256
-        out_source_dpath = './reports/TDAE_VAE_freq'
-        data_path='data/toy_data_freq_shape.hdf5'
-    elif 'toy' in args.data:
-        img_w, img_h = 256, 256
-        out_source_dpath = './reports/TDAE_VAE_toy'
-        data_path='data/toy_data.hdf5'
-    elif 'colon' in args.data:
-        img_w, img_h = 224, 224
-        out_source_dpath = './reports/TDAE_VAE_colon' 
-        data_path='data/colon_renew.hdf5'
-    else:
-        return
+    # if 'freq' in args.data:
+    #     img_w, img_h = 256, 256
+    #     out_source_dpath = './reports/TDAE_VAE_freq'
+    #     data_path='data/toy_data_freq_shape.hdf5'
+    # elif 'toy' in args.data:
+    #     img_w, img_h = 256, 256
+    #     out_source_dpath = './reports/TDAE_VAE_toy'
+    #     data_path='data/toy_data.hdf5'
+    # elif 'colon' in args.data:
+    #     img_w, img_h = 224, 224
+    #     out_source_dpath = './reports/TDAE_VAE_colon' 
+    #     data_path='data/colon_renew.hdf5'
+    # else:
+    #     return
     if args.ex is None:
         pass
     else:
@@ -1535,21 +1660,22 @@ def val_TDAE_VAE_fullsuper_disentangle(zero_padding=False):
 
 
 def test_TDAE_VAE_fullsuper_disentangle():
+    img_w, img_h, out_source_dpath, data_path = get_outputpath()
     args = argparses()
-    if 'freq' in args.data:
-        img_w, img_h = 256, 256
-        out_source_dpath = './reports/TDAE_VAE_freq'
-        data_path='data/toy_data_freq_shape.hdf5'
-    elif 'toy' in args.data:
-        img_w, img_h = 256, 256
-        out_source_dpath = './reports/TDAE_VAE_toy'
-        data_path='data/toy_data.hdf5'
-    elif 'colon' in args.data:
-        img_w, img_h = 224, 224
-        out_source_dpath = './reports/TDAE_VAE_colon' 
-        data_path='data/colon_renew.hdf5'
-    else:
-        return
+    # if 'freq' in args.data:
+    #     img_w, img_h = 256, 256
+    #     out_source_dpath = './reports/TDAE_VAE_freq'
+    #     data_path='data/toy_data_freq_shape.hdf5'
+    # elif 'toy' in args.data:
+    #     img_w, img_h = 256, 256
+    #     out_source_dpath = './reports/TDAE_VAE_toy'
+    #     data_path='data/toy_data.hdf5'
+    # elif 'colon' in args.data:
+    #     img_w, img_h = 224, 224
+    #     out_source_dpath = './reports/TDAE_VAE_colon' 
+    #     data_path='data/colon_renew.hdf5'
+    # else:
+    #     return
 
     if args.ex is None:
         pass
@@ -1657,21 +1783,22 @@ def test_TDAE_VAE_fullsuper_disentangle():
 
 
 def test_TDAE_VAE():
+    img_w, img_h, out_source_dpath, data_path = get_outputpath()
     args = argparses()
-    if 'freq' in args.data:
-        img_w, img_h = 256, 256
-        out_source_dpath = './reports/TDAE_VAE_freq'
-        data_path='data/toy_data_freq_shape.hdf5'
-    elif 'toy' in args.data:
-        img_w, img_h = 256, 256
-        out_source_dpath = './reports/TDAE_VAE_toy'
-        data_path='data/toy_data.hdf5'
-    elif 'colon' in args.data:
-        img_w, img_h = 224, 224
-        out_source_dpath = './reports/TDAE_VAE_colon' 
-        data_path='data/colon_renew.hdf5'
-    else:
-        return
+    # if 'freq' in args.data:
+    #     img_w, img_h = 256, 256
+    #     out_source_dpath = './reports/TDAE_VAE_freq'
+    #     data_path='data/toy_data_freq_shape.hdf5'
+    # elif 'toy' in args.data:
+    #     img_w, img_h = 256, 256
+    #     out_source_dpath = './reports/TDAE_VAE_toy'
+    #     data_path='data/toy_data.hdf5'
+    # elif 'colon' in args.data:
+    #     img_w, img_h = 224, 224
+    #     out_source_dpath = './reports/TDAE_VAE_colon' 
+    #     data_path='data/colon_renew.hdf5'
+    # else:
+    #     return
 
     if args.ex is None:
         pass
@@ -1685,16 +1812,15 @@ def test_TDAE_VAE():
         out_param_dpath = '{}/param'.format(out_source_dpath)
         out_test_dpath = '{}/test_{}'.format(out_source_dpath, args.param)
     clean_directory(out_test_dpath)
-
-    d2ae_flag = False
-    if args.rev:
-        srcs, targets2, targets1 = get_flatted_data(data_path)
-    else:
-        srcs, targets1, targets2 = get_flatted_data(data_path)
-    data_pairs = torch.utils.data.TensorDataset(srcs, targets1, targets2)
     
+    if args.rev:
+        src, targets2, targets1, idxs = get_triplet_flatted_data_with_idx(data_path)
+    else:
+        src, targets1, targets2, idxs = get_triplet_flatted_data_with_idx(data_path)
+    data_pairs = torch.utils.data.TensorDataset(idxs[0], idxs[1], idxs[2], targets1, targets2)
+
     # model = TDAE_out(n_class1=torch.unique(targets1).size(0), n_class2=5, d2ae_flag = d2ae_flag, img_h=img_h, img_w=img_w)
-    model = TDAE_VAE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels)
+    model = TDAE_VAE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels, triplet=args.triplet)
 
     if args.param == 'best':
         model.load_state_dict(torch.load('{}/TDAE_test_bestparam.json'.format(out_param_dpath)))
@@ -1721,83 +1847,96 @@ def test_TDAE_VAE():
     test_loader = DataLoader(test_set, batch_size=32, shuffle=False)
 
     with torch.no_grad():
-        model.eval()
         X1, X2, Y1, Y2 = [], [], [], []
+        model.eval()
         for loader in [train_loader, val_loader, test_loader]:
-            X_train1, X_train2, Y_train1, Y_train2 = [], [], [], []
-            for n_iter, (inputs, targets1, targets2) in enumerate(loader):
-                (h0, t0) = model.hidden_output(inputs.to(device))
-                h0 = h0.detach().to('cpu').numpy()
-                t0 = t0.detach().to('cpu').numpy()
-                X_train1.extend(h0)
-                X_train2.extend(t0)
-                Y_train1.extend(targets1.detach().to('cpu').numpy())
-                Y_train2.extend(targets2.detach().to('cpu').numpy())
+            x1, x2, y1, y2 = [], [], [], []
+            for n_iter, (idx, _, _, target, sub_target) in enumerate(loader):
+                (mu1, mu2) = model.hidden_output(src[idx].to(device))
+                mu1 = mu1.detach().to('cpu').numpy()
+                mu2 = mu2.detach().to('cpu').numpy()
+                x1.extend(mu1)
+                x2.extend(mu2)
+                y1.extend(target.detach().to('cpu').numpy())
+                y2.extend(sub_target.detach().to('cpu').numpy())
     
-            X_train1 = np.asarray(X_train1)
-            X1.append(X_train1)
-            X_train2 = np.asarray(X_train2)
-            X2.append(X_train2)
-            Y_train1 = np.asarray(Y_train1)
-            Y1.append(Y_train1)
-            Y_train2 = np.asarray(Y_train2)
-            Y2.append(Y_train2)
+            x1 = np.asarray(x1)
+            x2 = np.asarray(x2)
+            y1 = np.asarray(y1)
+            y2 = np.asarray(y2)
+            X1.append(x1)
+            X2.append(x2)
+            Y1.append(y1)
+            Y2.append(y2)
         
-        logreg = LogisticRegression(penalty='l2', solver="sag")
-        linear_svc = LinearSVC()
-        tag = ['main2main', 'main2sub', 'sub2main', 'sub2sub']
-        i = 0
-        score_dict = {}
+    logreg = LogisticRegression(penalty='l2', solver="sag")
+    linear_svc = LinearSVC()
+    tag = ['main2main', 'main2sub', 'sub2main', 'sub2sub']
+    i = 0
+    score_dict = {}
 
-        for X, Y in itertools.product([X1, X2], [Y1, Y2]):
-            logreg.fit(X[0], Y[0])
-            score_reg = logreg.score(X[0], Y[0])
-            print(tag[i])
-            print('train-------------------------------')
-            score_dict[tag[i]] = [score_reg]
-            print(score_reg)
-            l = logreg.predict_proba(X[0])
-            p = np.argmax(l, axis=1)
-            p0 = []
-            # for u in np.unique(Y):
-                # print(u, ':', np.sum(Y[1]==u), np.sum(Y[2]==u))
-                # p0.append(p[Y2[0]==u])
-            # print(np.sum(Y2[0]==0), np.sum(Y2[0]==1))
-            # for p00, u in zip(p0, np.unique(Y)):
-            #     print(np.sum(p0==u))
-            score_reg = logreg.score(X[1], Y[1])
-            print('val-------------------------------')
-            print(score_reg)
-            score_dict[tag[i]].append(score_reg)
-            score_reg = logreg.score(X[2], Y[2])
-            print('test-------------------------------')
-            print(score_reg)
-            score_dict[tag[i]].append(score_reg)
-            i += 1
-        df = pd.DataFrame.from_dict(score_dict)
-        df.to_csv('{}/LinearReg.csv'.format(out_test_dpath))
+    for X, Y in itertools.product([X1, X2], [Y1, Y2]):
+        logreg.fit(X[0], Y[0])
+        score_reg = logreg.score(X[0], Y[0])
+        print(tag[i])
+        print('train-------------------------------')
+        score_dict[tag[i]] = [score_reg]
+        print(score_reg)
+        l = logreg.predict_proba(X[0])
+        p = np.argmax(l, axis=1)
+        p0 = []
+        # for u in np.unique(Y):
+            # print(u, ':', np.sum(Y[1]==u), np.sum(Y[2]==u))
+            # p0.append(p[Y2[0]==u])
+        # print(np.sum(Y2[0]==0), np.sum(Y2[0]==1))
+        # for p00, u in zip(p0, np.unique(Y)):
+        #     print(np.sum(p0==u))
+        score_reg = logreg.score(X[1], Y[1])
+        print('val-------------------------------')
+        print(score_reg)
+        score_dict[tag[i]].append(score_reg)
+        score_reg = logreg.score(X[2], Y[2])
+        print('test-------------------------------')
+        print(score_reg)
+        score_dict[tag[i]].append(score_reg)
+        i += 1
+    df = pd.DataFrame.from_dict(score_dict)
+    df.to_csv('{}/LinearReg.csv'.format(out_test_dpath))
 
 
 def main():
-    # if os.path.exists('./data/colon_renew.hdf5') is False:
-    #     data_review()
-    # get_character_dataset()
-    # return
     args = argparses()
     print(args)
-    train_TDAE_VAE_fullsuper_disentangle()
-    val_TDAE_VAE_fullsuper_disentangle()
-    test_TDAE_VAE_fullsuper_disentangle()
-    return
-    if args.triplet:
-        triplet_train_TDAE_VAE()
-    else:
-        # train_TDAE_VAE()
+    if args.full:
+        if args.mode == 'val':
+            val_TDAE_VAE_fullsuper_disentangle()
+            return
+        elif args.mode == 'test':
+            test_TDAE_VAE_fullsuper_disentangle()
+            return
+        elif args.mode == 'train':
+            train_TDAE_VAE_fullsuper_disentangle()
+            return
         train_TDAE_VAE_fullsuper_disentangle()
+        val_TDAE_VAE_fullsuper_disentangle()
+        test_TDAE_VAE_fullsuper_disentangle()
+        return
+
+    if args.mode == 'val':
+        val_TDAE_VAE()
+        return
+    elif args.mode == 'test':
+        test_TDAE_VAE()
+        return
+    elif args.mode == 'train':
+        train_TDAE_VAE_v2()
+        return
+
+    train_TDAE_VAE_v2()
     val_TDAE_VAE()
     test_TDAE_VAE()
 
-    
+
 if __name__ == '__main__':
     # with SetIO('./out.log'):
     main()

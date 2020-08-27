@@ -74,12 +74,12 @@ class TripletLoss(nn.Module):
 
 def negative_entropy_loss(input, small_value=1e-4):
     softmax_input = F.softmax(input, dim=1) + small_value
-    w = torch.ones((softmax_input.size(0), softmax_input.size(1))) / softmax_input.size(1)
-    w = w.to(device)
+    # w = torch.ones((softmax_input.size(0), softmax_input.size(1))) / softmax_input.size(1)
+    # w = w.to(device)
     log_input = torch.log(softmax_input)
     # weight_log_input = w * log_input
     # weight_log_input = torch.mul(w, log_input)
-    neg_entropy = -1 * torch.sum(log_input, dim=1) / log_input.size()[1]
+    neg_entropy = torch.sum(-log_input, dim=1) / log_input.size()[1]
     return torch.mean(neg_entropy)
 
 
