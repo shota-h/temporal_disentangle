@@ -25,7 +25,7 @@ tran_prob_part = np.resize(flatten, (n_part, n_part))
 flatten = tran_prob_color.flatten()
 flatten[::n_color+1] = reccrent_prob_color
 tran_prob_color = np.resize(flatten, (n_color, n_color))
-n_seq = 500
+n_seq = 1000
 min_len = 20
 if args.check:
     out_img = True
@@ -36,7 +36,7 @@ if os.path.exists('./data') is False:
     os.makedirs('./data')
 
 def color_shape():
-    out_dpath = './data/huge_toy_data.hdf5'
+    out_dpath = './data/Huge_toy_data.hdf5'
     with h5py.File(out_dpath, 'w') as f:
         for seq_id in range(n_seq):
             s0 = np.random.choice(n_part, size=1)[0]

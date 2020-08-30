@@ -15,6 +15,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib import cm
+import seaborn as sns
 from functools import partial
 from sklearn.manifold import TSNE
 from sklearn.model_selection import train_test_split
@@ -161,24 +162,35 @@ def get_outputpath():
         img_w, img_h = 256, 256
         out_source_dpath = './reports/TDAE_VAE_huge' 
         data_path = './data/huge_toy_data.hdf5'
+    elif 'Huge' in args.data:
+        img_w, img_h = 256, 256
+        out_source_dpath = './reports/TDAE_VAE_HUGE' 
+        data_path = './data/Huge_toy_data.hdf5'
     elif 'colon' in args.data:
         img_w, img_h = 224, 224
         out_source_dpath = './reports/TDAE_VAE_colon'
         data_path = './data/colon_renew.hdf5'
     
-    return img_w, img_h, out_source_dpath, data_path
+    if not(args.ex is None):
+        ex = args.ex
+    else:
+        if args.triplet:
+            ex = 'prop'
+        else:
+            ex = 'exist'
+            
+    return img_w, img_h, out_source_dpath, data_path, ex
 
 
 def train_TDAE_VAE_v2():
     args = argparses()
-    img_w, img_h, out_source_dpath, data_path = get_outputpath()
+    img_w, img_h, out_source_dpath, data_path, ex = get_outputpath()
 
-    if args.ex is None:
-        t = datetime.datetime.now()
-        t = t.strftime('%H-%M-%S')
-        out_source_dpath = out_source_dpath + '/' + t
-    else:
-        out_source_dpath = out_source_dpath + '/' + args.ex
+    # if args.ex is None:
+    #     t = datetime.datetime.now()
+    #     t = t.strftime('%H-%M-%S')
+    #     out_source_dpath = out_source_dpath + '/' + t
+    out_source_dpath = out_source_dpath + '/' + ex
 
     if args.rev:
         out_source_dpath = out_source_dpath + '_rev'
@@ -209,7 +221,7 @@ def train_TDAE_VAE_v2():
     model = model.to(device)
 
     if args.retrain:
-        model.load_state_dict(torch.load('{}/param/TDAE_test_param.json'.format(out_source_dpath)))
+        model.load_state_dict(torch.load('{}/param/TDAE_test_bestparam.json'.format(out_source_dpath)))
         out_param_dpath = '{}/re_param'.format(out_source_dpath)
         out_board_dpath = '{}/re_runs'.format(out_source_dpath)
         out_condition_dpath = '{}/re_condition'.format(out_source_dpath)
@@ -787,16 +799,11 @@ def train_TDAE_VAE():
 
 def train_TDAE_VAE_fullsuper_disentangle():
     args = argparses()
-    img_w, img_h, out_source_dpath, data_path = get_outputpath()
+    img_w, img_h, out_source_dpath, data_path, ex = get_outputpath()
     
-    if not(args.ex is None):
-        out_source_dpath = os.path.join(out_source_dpath, args.ex)
+    # if not(args.ex is None):
+    out_source_dpath = os.path.join(out_source_dpath, ex)
 
-    if args.rev:
-        src, targets2, targets1 = get_flatted_data(data_path)
-    else:
-        src, targets1, targets2 = get_flatted_data(data_path)
-        
     if args.rev:
         out_source_dpath = out_source_dpath + '_rev'
         src, targets2, targets1, idxs = get_triplet_flatted_data_with_idx(data_path)
@@ -807,7 +814,7 @@ def train_TDAE_VAE_fullsuper_disentangle():
     # data_pairs = torch.utils.data.TensorDataset(src, targets1, targets2)
     model = TDAE_VAE_fullsuper_disentangle(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels, triplet=args.triplet)
     if args.retrain:
-        model.load_state_dict(torch.load('{}/param/TDAE_test_param.json'.format(out_source_dpath)))
+        model.load_state_dict(torch.load('{}/param/TDAE_test_bestparam.json'.format(out_source_dpath)))
         out_param_dpath = '{}/re_param'.format(out_source_dpath)
         out_board_dpath = '{}/re_runs'.format(out_source_dpath)
         out_condition_dpath = '{}/re_condition'.format(out_source_dpath)
@@ -981,25 +988,13 @@ def val_TDAE_VAE(zero_padding=False):
     torch.manual_seed(SEED)
     rn.seed(SEED)
     np.random.seed(SEED)
-    img_w, img_h, out_source_dpath, data_path = get_outputpath()
+    img_w, img_h, out_source_dpath, data_path, ex = get_outputpath()
     args = argparses()
     
-    if args.ex is None:
-        pass
-    else:
-        out_source_dpath = out_source_dpath + '/' + args.ex
-    if args.retrain:
-        out_param_dpath = '{}/re_param'.format(out_source_dpath)
-        out_val_dpath = '{}/re_val_{}'.format(out_source_dpath, args.param)
-        out_fig_dpath = '{}/re_fig_{}'.format(out_source_dpath, args.param)
-    else:
-        out_param_dpath = '{}/param'.format(out_source_dpath)
-        out_val_dpath = '{}/val_{}'.format(out_source_dpath, args.param)
-        out_fig_dpath = '{}/fig_{}'.format(out_source_dpath, args.param)
-    clean_directory(out_val_dpath)
-    clean_directory(out_fig_dpath)
-
-    ratio = [0.7, 0.2, 0.1]
+    # if args.ex is None:
+    #     pass
+    # else:
+    out_source_dpath = out_source_dpath + '/' + ex
     if args.rev:
         out_source_dpath = out_source_dpath + '_rev'
         # srcs, targets2, targets1 = get_flatted_data(data_path)
@@ -1007,8 +1002,17 @@ def val_TDAE_VAE(zero_padding=False):
     else:
         # srcs, targets1, targets2 = get_flatted_data(data_path)
         src, targets1, targets2, idxs = get_triplet_flatted_data_with_idx(data_path)
-
     data_pairs = torch.utils.data.TensorDataset(idxs[0], idxs[1], idxs[2], targets1, targets2)
+    if args.retrain:
+        out_param_dpath = '{}/re_param'.format(out_source_dpath)
+        # out_val_dpath = '{}/re_val_{}'.format(out_source_dpath, args.param)
+        out_fig_dpath = '{}/re_fig_{}'.format(out_source_dpath, args.param)
+    else:
+        out_param_dpath = '{}/param'.format(out_source_dpath)
+        # out_val_dpath = '{}/val_{}'.format(out_source_dpath, args.param)
+        out_fig_dpath = '{}/fig_{}'.format(out_source_dpath, args.param)
+    clean_directory(out_fig_dpath)
+
     if args.full:
         model = TDAE_VAE_fullsuper_disentangle(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels, triplet=args.triplet)
     else:
@@ -1037,115 +1041,71 @@ def val_TDAE_VAE(zero_padding=False):
     
     # with torch.no_grad():
     #     model.eval()
-    #     # for n_iter, (inputs, targets1, target2) in enumerate(val_loader):
-    #     for n_iter, (idx, _, _, _, _) in enumerate(val_loader):
-    #         reconst = model.reconst(src[idx].to(device))
-    #         s_reconst = model.shuffle_reconst(src[idx].to(device), idx1=[0, 1], idx2=[1, 0])
-    #         np_input0 = src[idx][0].detach().to('cpu')
-    #         np_input1 = src[idx][1].detach().to('cpu')
-    #         np_reconst0 = reconst[0].detach().to('cpu')
-    #         np_reconst1 = reconst[1].detach().to('cpu')
-    #         s_np_reconst0 = s_reconst[0].detach().to('cpu')
-    #         s_np_reconst1 = s_reconst[1].detach().to('cpu')
-    #         pad0_reconst = model.fix_padding_reconst(src[idx].to(device), which_val=0, pad_val=0)
-    #         pad0_np_reconst0 = pad0_reconst[0].detach().to('cpu')
-    #         pad0_np_reconst1 = pad0_reconst[1].detach().to('cpu')
-    #         pad1_reconst = model.fix_padding_reconst(src[idx].to(device), which_val=1, pad_val=0)
-    #         pad1_np_reconst0 = pad1_reconst[0].detach().to('cpu')
-    #         pad1_np_reconst1 = pad1_reconst[1].detach().to('cpu')
-    #         fig = plt.figure(figsize=(16*4, 9*2))
-    #         ax = fig.add_subplot(2, 5, 1)
-    #         ax.set_title('1')
-    #         ax.imshow(np.transpose(np_input0, (1,2,0)))
-    #         ax = fig.add_subplot(2, 5, 2)
-    #         ax.set_title('1')
-    #         ax.imshow(np.transpose(np_reconst0, (1,2,0)))
-    #         ax = fig.add_subplot(2, 5, 3)
-    #         ax.set_title('1')
-    #         ax.imshow(np.transpose(s_np_reconst0, (1,2,0)))
-    #         ax = fig.add_subplot(2, 5, 4)
-    #         ax.set_title('1')
-    #         ax.imshow(np.transpose(pad0_np_reconst0, (1,2,0)))
-    #         ax = fig.add_subplot(2, 5, 5)
-    #         ax.set_title('1')
-    #         ax.imshow(np.transpose(pad1_np_reconst0, (1,2,0)))
-    #         ax = fig.add_subplot(2, 5, 6)
-    #         ax.set_title('2')
-    #         ax.imshow(np.transpose(np_input1, (1,2,0)))
-    #         ax = fig.add_subplot(2, 5, 7)
-    #         ax.set_title('2')
-    #         ax.imshow(np.transpose(np_reconst1, (1,2,0)))
-    #         ax = fig.add_subplot(2, 5, 8)
-    #         ax.set_title('2')
-    #         ax.imshow(np.transpose(s_np_reconst1, (1,2,0)))
-    #         ax = fig.add_subplot(2, 5, 9)
-    #         ax.set_title('2')
-    #         ax.imshow(np.transpose(pad0_np_reconst1, (1,2,0)))
-    #         ax = fig.add_subplot(2, 5, 10)
-    #         ax.set_title('2')
-    #         ax.imshow(np.transpose(pad1_np_reconst1, (1,2,0)))
-    #         fig.savefig('{}/val_sample{:04d}.png'.format(out_val_dpath, n_iter))
-    #         plt.close(fig)
-    #         if n_iter >= 50:
-    #             break
-
-    #     for n_iter, (inputs, targets1, target2) in enumerate(train_loader):
-    #     for n_iter, (idx, _, _, _, _) in enumerate(train_loader):
-    #         reconst = model.reconst(src[idx].to(device))
-    #         np_input0 = src[idx][0].detach().to('cpu')
-    #         np_input1 = src[idx][1].detach().to('cpu')
-    #         np_reconst0 = reconst[0].detach().to('cpu')
-    #         np_reconst1 = reconst[1].detach().to('cpu')
-    #         s_reconst = model.shuffle_reconst(src[idx].to(device), idx1=[0, 1], idx2=[1, 0])
-    #         s_np_reconst0 = s_reconst[0].detach().to('cpu')
-    #         s_np_reconst1 = s_reconst[1].detach().to('cpu')
-    #         pad0_reconst = model.fix_padding_reconst(src[idx].to(device), which_val=0, pad_val=0)
-    #         pad0_np_reconst0 = pad0_reconst[0].detach().to('cpu')
-    #         pad0_np_reconst1 = pad0_reconst[1].detach().to('cpu')
-    #         pad1_reconst = model.fix_padding_reconst(src[idx].to(device), which_val=1, pad_val=0)
-    #         pad1_np_reconst0 = pad1_reconst[0].detach().to('cpu')
-    #         pad1_np_reconst1 = pad1_reconst[1].detach().to('cpu')
-    #         fig = plt.figure(figsize=(16*4, 9*2))
-    #         ax = fig.add_subplot(2, 5, 1)
-    #         ax.set_title('1')
-    #         ax.imshow(np.transpose(np_input0, (1,2,0)))
-    #         ax = fig.add_subplot(2, 5, 2)
-    #         ax.set_title('1')
-    #         ax.imshow(np.transpose(np_reconst0, (1,2,0)))
-    #         ax = fig.add_subplot(2, 5, 3)
-    #         ax.set_title('1')
-    #         ax.imshow(np.transpose(s_np_reconst0, (1,2,0)))
-    #         ax = fig.add_subplot(2, 5, 4)
-    #         ax.set_title('1')
-    #         ax.imshow(np.transpose(pad0_np_reconst0, (1,2,0)))
-    #         ax = fig.add_subplot(2, 5, 5)
-    #         ax.set_title('1')
-    #         ax.imshow(np.transpose(pad1_np_reconst0, (1,2,0)))
-    #         ax = fig.add_subplot(2, 5, 6)
-    #         ax.set_title('2')
-    #         ax.imshow(np.transpose(np_input1, (1,2,0)))
-    #         ax = fig.add_subplot(2, 5, 7)
-    #         ax.set_title('2')
-    #         ax.imshow(np.transpose(np_reconst1, (1,2,0)))
-    #         ax = fig.add_subplot(2, 5, 8)
-    #         ax.set_title('2')
-    #         ax.imshow(np.transpose(s_np_reconst1, (1,2,0)))
-    #         ax = fig.add_subplot(2, 5, 9)
-    #         ax.set_title('2')
-    #         ax.imshow(np.transpose(pad0_np_reconst1, (1,2,0)))
-    #         ax = fig.add_subplot(2, 5, 10)
-    #         ax.set_title('2')
-    #         ax.imshow(np.transpose(pad1_np_reconst1, (1,2,0)))
-    #         fig.savefig('{}/train_sample{:04d}.png'.format(out_val_dpath, n_iter))
-    #         plt.close(fig)
-    #         if n_iter >= 50:
-    #             break
+    #     n_s = 50
+    #     for first, loader in zip(['train', 'val'], [train_loader, val_loader]):
+    #         for n_iter, (idx, _, _, _, _) in enumerate(val_loader):
+    #             reconst = model.reconst(src[idx].to(device))
+    #             s_reconst = model.shuffle_reconst(src[idx].to(device), idx1=[0, 1], idx2=[1, 0])
+    #             np_input0 = src[idx][0].detach().to('cpu')
+    #             np_input1 = src[idx][1].detach().to('cpu')
+    #             np_reconst0 = reconst[0].detach().to('cpu')
+    #             np_reconst1 = reconst[1].detach().to('cpu')
+    #             s_np_reconst0 = s_reconst[0].detach().to('cpu')
+    #             s_np_reconst1 = s_reconst[1].detach().to('cpu')
+    #             pad0_reconst = model.fix_padding_reconst(src[idx].to(device), which_val=0, pad_val=0)
+    #             pad0_np_reconst0 = pad0_reconst[0].detach().to('cpu')
+    #             pad0_np_reconst1 = pad0_reconst[1].detach().to('cpu')
+    #             pad1_reconst = model.fix_padding_reconst(src[idx].to(device), which_val=1, pad_val=0)
+    #             pad1_np_reconst0 = pad1_reconst[0].detach().to('cpu')
+    #             pad1_np_reconst1 = pad1_reconst[1].detach().to('cpu')
+    #             fig = plt.figure(figsize=(16*4, 9*2))
+    #             ax = fig.add_subplot(2, 5, 1)
+    #             ax.set_title('1')
+    #             ax.imshow(np.transpose(np_input0, (1,2,0)))
+    #             ax = fig.add_subplot(2, 5, 2)
+    #             ax.set_title('1')
+    #             ax.imshow(np.transpose(np_reconst0, (1,2,0)))
+    #             ax = fig.add_subplot(2, 5, 3)
+    #             ax.set_title('1')
+    #             ax.imshow(np.transpose(s_np_reconst0, (1,2,0)))
+    #             ax = fig.add_subplot(2, 5, 4)
+    #             ax.set_title('1')
+    #             ax.imshow(np.transpose(pad0_np_reconst0, (1,2,0)))
+    #             ax = fig.add_subplot(2, 5, 5)
+    #             ax.set_title('1')
+    #             ax.imshow(np.transpose(pad1_np_reconst0, (1,2,0)))
+    #             ax = fig.add_subplot(2, 5, 6)
+    #             ax.set_title('2')
+    #             ax.imshow(np.transpose(np_input1, (1,2,0)))
+    #             ax = fig.add_subplot(2, 5, 7)
+    #             ax.set_title('2')
+    #             ax.imshow(np.transpose(np_reconst1, (1,2,0)))
+    #             ax = fig.add_subplot(2, 5, 8)
+    #             ax.set_title('2')
+    #             ax.imshow(np.transpose(s_np_reconst1, (1,2,0)))
+    #             ax = fig.add_subplot(2, 5, 9)
+    #             ax.set_title('2')
+    #             ax.imshow(np.transpose(pad0_np_reconst1, (1,2,0)))
+    #             ax = fig.add_subplot(2, 5, 10)
+    #             ax.set_title('2')
+    #             ax.imshow(np.transpose(pad1_np_reconst1, (1,2,0)))
+    #             fig.savefig('{}/{}_sample{:04d}.png'.format(out_val_dpath, first, n_iter))
+    #             plt.close(fig)
+    #             if n_iter >= n_s:
+    #                 break
     
+    markers = ['.', 'x']
+    colors1 = ['blue', 'orange']
+    colors2 = ['r', 'g']
+    if args.rev:
+        buff = colors1
+        colors1 = colors2
+        colors2 = buff
+        
     with torch.no_grad():
         for first, loader in zip(['train', 'val'], [train_loader, val_loader]):
             model.eval()
             X1, X2, Y1, Y2 = [], [], [], []
-            # for n_iter, (inputs, targets1, targets2) in enumerate(train_loader):
             for n_iter, (idx, _, _, target, sub_target) in enumerate(loader):
                 (mu1, mu2) = model.hidden_output(src[idx].to(device))
                 mu1 = mu1.detach().to('cpu').numpy()
@@ -1159,16 +1119,16 @@ def val_TDAE_VAE(zero_padding=False):
             X2 = np.asarray(X2)
             Y1 = np.asarray(Y1)
             Y2 = np.asarray(Y2) 
-            for X, ex in zip([X1, X2], ['main', 'sub']):
+            for (X, ex) in zip([X1, X2], ['main', 'sub']):
                 rn.seed(SEED)
                 np.random.seed(SEED)
                 tsne = TSNE(n_components=2, random_state=SEED)
                 Xt = tsne.fit_transform(X)
                 fig = plt.figure(figsize=(16*2, 9))
-                for ia, Y in enumerate([Y1, Y2]): 
+                for ia, (Y, co) in enumerate(zip([Y1, Y2], [colors1, colors2])): 
                     ax = fig.add_subplot(1,2,ia+1)
-                    for k in np.unique(Y):
-                        ax.scatter(x=Xt[Y==k,0], y=Xt[Y==k,1], marker='.', alpha=0.5)
+                    for iy, k in enumerate(np.unique(Y)):
+                        ax.scatter(x=Xt[Y==k,0], y=Xt[Y==k,1], c=co[iy], alpha=0.5, marker='.')
                     ax.set_aspect('equal', 'datalim')
                 fig.savefig('{}/{}_hidden_features_{}.png'.format(out_fig_dpath, first, ex))
                 plt.close(fig)
@@ -1187,29 +1147,40 @@ def val_TDAE_VAE(zero_padding=False):
                 fig = plt.figure(figsize=(6, 6))
                 ax = fig.add_subplot(1,1,1)
                 ratio = np.append([0], np.cumsum(pca.explained_variance_ratio_))
+                pca_idx = np.where(ratio >= 0.99)[0]
                 ax.plot(ratio)
                 fig.savefig('{}/{}_ratio_{}.png'.format(out_fig_dpath, first, ex))
                 plt.close(fig)
                 
-                pca_feature = pca.transform(X)
+                pca_feature = pca.transform(Xn)
                 fig = plt.figure(figsize=(16*2, 9))
-                for ia, Y in enumerate([Y1, Y2]):
+                for ia, (Y, co) in enumerate(zip([Y1, Y2], [colors1, colors2])):
                     ax = fig.add_subplot(1,2,ia+1)
-                    for k in np.unique(Y):
-                        ax.scatter(pca_feature[Y==k, 0], pca_feature[Y==k, 1], alpha=0.8, marker='.')
+                    for iy, k in enumerate(np.unique(Y)):
+                        ax.scatter(pca_feature[Y==k, 0], pca_feature[Y==k, 1], alpha=0.5, c=co[iy], marker='.')
                         ax.set_aspect('equal', 'datalim')
                 fig.savefig('{}/{}_pca_{}.png'.format(out_fig_dpath, first, ex))
                 plt.close(fig)
                 
-                pca_idx = np.where(ratio >= 0.99)[0]
+                cs = ['dim{}'.format(d+1) for d in range(5)]
+                df = pd.DataFrame(pca_feature[:, :5], columns=cs)
+                # df = pd.DataFrame(pca_feature[:, pca_idx[0]+1:pca_idx[0]+6], columns=cs)
+                for tag, Y, co in zip(['Y1', 'Y2'], [Y1, Y2], [colors1, colors2]):
+                    tar = ['Class{}'.format(y) for y in Y]
+                    df['target'] = tar
+                    palette_dict = {}
+                    for t, c in zip(np.unique(tar), co):
+                        palette_dict[t] = c
+                    sns.pairplot(df, hue='target', diag_kind='hist', vars=cs, palette=palette_dict).savefig('{}/{}_PairPlot_{}_{}.png'.format(out_fig_dpath, first, ex, tag))
+                    
                 cat_feature = pca_feature[:, :pca_idx[0]+1]
                 tsne = TSNE(n_components=2, random_state=SEED)
                 cat_tsne_feature = tsne.fit_transform(cat_feature)
                 fig = plt.figure(figsize=(16*2, 9))
-                for ia, Y in enumerate([Y1, Y2]):
+                for ia, (Y, co) in enumerate(zip([Y1, Y2], [colors1, colors2])):
                     ax = fig.add_subplot(1,2,ia+1)
-                    for k in np.unique(Y):
-                        ax.scatter(cat_tsne_feature[Y==k, 0], cat_tsne_feature[Y==k, 1], alpha=0.8, marker='.')
+                    for iy, k in enumerate(np.unique(Y)):
+                        ax.scatter(cat_tsne_feature[Y==k, 0], cat_tsne_feature[Y==k, 1], alpha=0.5, c=co[iy], marker='.')
                         ax.set_aspect('equal', 'datalim')
                 fig.savefig('{}/{}_decomp_tsne_{}.png'.format(out_fig_dpath, first, ex))
                 plt.close(fig)
@@ -1325,12 +1296,18 @@ def test_TDAE_VAE_fullsuper_disentangle():
 
 
 def test_TDAE_VAE():
-    img_w, img_h, out_source_dpath, data_path = get_outputpath()
+    img_w, img_h, out_source_dpath, data_path, ex = get_outputpath()
     args = argparses()
-    if args.ex is None:
-        pass
+    # if args.ex is None:
+    #     pass
+    # else:
+    out_source_dpath = out_source_dpath + '/' + ex
+    if args.rev:
+        out_source_dpath = out_source_dpath + '_rev'
+        src, targets2, targets1, idxs = get_triplet_flatted_data_with_idx(data_path)
     else:
-        out_source_dpath = out_source_dpath + '/' + args.ex
+        src, targets1, targets2, idxs = get_triplet_flatted_data_with_idx(data_path)
+    data_pairs = torch.utils.data.TensorDataset(idxs[0], idxs[1], idxs[2], targets1, targets2)
 
     if args.retrain:
         out_param_dpath = '{}/re_param'.format(out_source_dpath)
@@ -1340,13 +1317,6 @@ def test_TDAE_VAE():
         out_test_dpath = '{}/test_{}'.format(out_source_dpath, args.param)
     clean_directory(out_test_dpath)
     
-    if args.rev:
-        out_source_dpath = out_source_dpath + '_rev'
-        src, targets2, targets1, idxs = get_triplet_flatted_data_with_idx(data_path)
-    else:
-        src, targets1, targets2, idxs = get_triplet_flatted_data_with_idx(data_path)
-    data_pairs = torch.utils.data.TensorDataset(idxs[0], idxs[1], idxs[2], targets1, targets2)
-
     if args.full:
         model = TDAE_VAE_fullsuper_disentangle(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels, triplet=args.triplet)
     else:
@@ -1410,11 +1380,144 @@ def test_TDAE_VAE():
             else:
                 score_reg = logreg.score(X_dict[k], Y_dict[k])
                 score_dict[tag[itag]].append(score_reg)
+            if tag[itag] == 'sub2main':
+                print(logreg.predict_proba(X_dict[k]))
+            print(score_dict)
             # l = logreg.predict_proba(X_dict[k])
             # p = np.argmax(l, axis=1)
             
     df = pd.DataFrame.from_dict(score_dict)
     df.to_csv('{}/LinearReg.csv'.format(out_test_dpath))
+
+    
+def confirm_seq():
+    torch.manual_seed(SEED)
+    rn.seed(SEED)
+    np.random.seed(SEED)
+    img_w, img_h, out_source_dpath, data_path, ex = get_outputpath()
+    args = argparses()
+
+    out_source_dpath = out_source_dpath + '/' + ex
+    if args.rev:
+        out_source_dpath = out_source_dpath + '_rev'
+        # srcs, targets2, targets1 = get_flatted_data(data_path)
+        src, targets2, targets1, idxs = get_triplet_flatted_data_with_idx(data_path)
+    else:
+        # srcs, targets1, targets2 = get_flatted_data(data_path)
+        src, targets1, targets2, idxs = get_triplet_flatted_data_with_idx(data_path)
+    data_pairs = torch.utils.data.TensorDataset(idxs[0], idxs[1], idxs[2], targets1, targets2)
+    if args.retrain:
+        out_param_dpath = '{}/re_param'.format(out_source_dpath)
+        out_fig_dpath = '{}/re_conf'.format(out_source_dpath)
+    else:
+        out_param_dpath = '{}/param'.format(out_source_dpath)
+        out_fig_dpath = '{}/conf'.format(out_source_dpath)
+    clean_directory(out_fig_dpath)
+
+    if args.full:
+        model = TDAE_VAE_fullsuper_disentangle(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels, triplet=args.triplet)
+    else:
+        model = TDAE_VAE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels, triplet=args.triplet)
+
+    ratio = [0.7, 0.2, 0.1]
+    n_sample = len(data_pairs)
+    train_size = int(n_sample*ratio[0])
+    
+    # train_set, val_set = torch.utils.data.random_split(data_pairs, [train_size, val_size])
+    train_indices = list(range(0, train_size))
+    train_set = torch.utils.data.dataset.Subset(data_pairs, train_indices)
+    train_loader = DataLoader(train_set, batch_size=2, shuffle=True)
+    
+    markers = ['.', 'x']
+    colors1 = ['blue', 'orange', 'purple']
+    colors2 = ['r', 'g']
+    if args.rev:
+        buff = colors1
+        colors1 = colors2
+        colors2 = buff
+        
+    with torch.no_grad():
+        for iters in range(50, 350, 50):
+            model.load_state_dict(torch.load('{}/TDAE_param_e{:04}.json'.format(out_param_dpath, iters)))
+            model.to(device)
+            for first, loader in zip(['train'], [train_loader]):
+                model.eval()
+                X1, X2, Y1, Y2 = [], [], [], []
+                # for n_iter, (inputs, targets1, targets2) in enumerate(train_loader):
+                for n_iter, (idx, _, _, target, sub_target) in enumerate(loader):
+                    (mu1, mu2) = model.hidden_output(src[idx].to(device))
+                    mu1 = mu1.detach().to('cpu').numpy()
+                    mu2 = mu2.detach().to('cpu').numpy()
+                    X1.extend(mu1)
+                    X2.extend(mu2)
+                    Y1.extend(target.detach().to('cpu').numpy())
+                    Y2.extend(sub_target.detach().to('cpu').numpy())
+            
+                X1 = np.asarray(X1)
+                X2 = np.asarray(X2)
+                Y1 = np.asarray(Y1)
+                Y2 = np.asarray(Y2) 
+                for X, ex in zip([X1, X2], ['main', 'sub']):
+                    rn.seed(SEED)
+                    np.random.seed(SEED)
+                    tsne = TSNE(n_components=2, random_state=SEED)
+                    Xt = tsne.fit_transform(X)
+                    fig = plt.figure(figsize=(16*2, 9))
+                    for ia, (Y, co) in enumerate(zip([Y1, Y2], [colors1, colors2])): 
+                        ax = fig.add_subplot(1,2,ia+1)
+                        for iy, k in enumerate(np.unique(Y)):
+                            ax.scatter(x=Xt[Y==k,0], y=Xt[Y==k,1], marker='.', alpha=0.5, c=co[iy])
+                        ax.set_aspect('equal', 'datalim')
+                    fig.savefig('{}/{}_hidden_features_{}_iter{:04}.png'.format(out_fig_dpath, first, ex, iters))
+                    plt.close(fig)
+
+                    fig = plt.figure(figsize=(6*2, 6))
+                    ax = fig.add_subplot(1,2,1)
+                    ax.hist(np.mean(X, axis=0))
+                    ax = fig.add_subplot(1,2,2)
+                    ax.hist(np.std(X, axis=0))
+                    fig.savefig('{}/{}_dist_{}_iter{:04}.png'.format(out_fig_dpath, first, ex, iters))
+                    plt.close(fig)
+
+                    Xn = (X - np.mean(X, axis=0)) / np.std(X, axis=0) 
+                    pca = PCA()
+                    pca.fit(Xn)
+                    fig = plt.figure(figsize=(6, 6))
+                    ax = fig.add_subplot(1,1,1)
+                    ratio = np.append([0], np.cumsum(pca.explained_variance_ratio_))
+                    ax.plot(ratio)
+                    fig.savefig('{}/{}_ratio_{}_iter{:04}.png'.format(out_fig_dpath, first, ex, iters))
+                    plt.close(fig)
+                    
+                    pca_feature = pca.transform(Xn)
+                    fig = plt.figure(figsize=(16*2, 9))
+                    for ia, (Y, co) in enumerate(zip([Y1, Y2], [colors1, colors2])):
+                        ax = fig.add_subplot(1,2,ia+1)
+                        for iy, k in enumerate(np.unique(Y)):
+                            ax.scatter(pca_feature[Y==k, 0], pca_feature[Y==k, 1], alpha=0.5, marker='.', c=co[iy])
+                            ax.set_aspect('equal', 'datalim')
+                    fig.savefig('{}/{}_pca_{}_iter{:04}.png'.format(out_fig_dpath, first, ex, iters))
+                    plt.close(fig)
+                    cs = ['dim{}'.format(d+1) for d in range(5)]
+                    df = pd.DataFrame(pca_feature[:, :5], columns=cs)
+                    for tag, Y, co in zip(['Y1', 'Y2'], [Y1, Y2], [colors1, colors2]):
+                        tar = ['Class{}'.format(y) for y in Y]
+                        df['target'] = tar
+                        sns.pairplot(df, hue='target', diag_kind='hist', vars=cs, palette={'Class0':co[0], 'Class1':co[1]}).savefig('{}/{}_PairPlot_{}_{}_iter{:04}.png'.format(out_fig_dpath, first, ex, tag, iters))
+                        plt.close()
+                    pca_idx = np.where(ratio >= 0.99)[0]
+                    cat_feature = pca_feature[:, :pca_idx[0]+1]
+                    tsne = TSNE(n_components=2, random_state=SEED)
+                    cat_tsne_feature = tsne.fit_transform(cat_feature)
+                    fig = plt.figure(figsize=(16*2, 9))
+                    for ia, (Y, co) in enumerate(zip([Y1, Y2], [colors1, colors2])):
+                        ax = fig.add_subplot(1,2,ia+1)
+                        for iy, k in enumerate(np.unique(Y)):
+                            ax.scatter(cat_tsne_feature[Y==k, 0], cat_tsne_feature[Y==k, 1], alpha=0.5, marker='.', c=co[iy])
+                            ax.set_aspect('equal', 'datalim')
+                    fig.savefig('{}/{}_decomp_tsne_{}_iter{:04}.png'.format(out_fig_dpath, first, ex, iters))
+                    plt.close(fig)
+
 
 
 def main():
@@ -1445,6 +1548,9 @@ def main():
         return
     elif args.mode == 'train':
         train_TDAE_VAE_v2()
+        return
+    elif args.mode == 'conf':
+        confirm_seq()
         return
     print('call train')
     train_TDAE_VAE_v2()
