@@ -1475,9 +1475,7 @@ def main():
             return
         train_TDAE_VAE_fullsuper_disentangle()
         val_TDAE_VAE()
-        # val_TDAE_VAE_fullsuper_disentangle()
         test_TDAE_VAE()
-        # test_TDAE_VAE_fullsuper_disentangle()
         return
 
     if args.mode == 'val':
