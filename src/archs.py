@@ -1210,10 +1210,7 @@ class TDAE_VAE(nn.Module):
         classifier_preds.append(self.classifiers[1](mu2))
         classifier_preds.append(self.classifiers[1](mu2_no_grad))
         rec = self.decode(z1, z2)
-        # if self.triplet:
-        return classifier_preds[0], classifier_preds[1], classifier_preds[2], rec, z1, z2, mu1, mu2, logvar1, logvar2
-
-        # return classifier_preds[0], classifier_preds[1], classifier_preds[2], rec, mu1, mu2, logvar1, logvar2
+        return classifier_preds[0], classifier_preds[1], classifier_preds[2], rec, mu1, mu2, logvar1, logvar2
 
     def predict_label(self, input):
         mu1, mu2, logvar1, logvar2 = self.encode(input)
@@ -1381,7 +1378,7 @@ class TDAE_VAE_fullsuper_disentangle(nn.Module):
         z2 = self.reparameterize(mu2, logvar2)
         if latent: return z1, z2
 
-        mu1_no_grad = mu2.clone().detach()
+        mu1_no_grad = mu1.clone().detach()
         mu2_no_grad = mu2.clone().detach()
         classifier_preds = []
         dis_classifier_preds = []
@@ -1392,9 +1389,6 @@ class TDAE_VAE_fullsuper_disentangle(nn.Module):
         dis_classifier_preds.append(self.disentangle_classifiers[1](mu2))
         dis_classifier_preds.append(self.disentangle_classifiers[1](mu2_no_grad))
         rec = self.decode(z1, z2)
-        if self.triplet:
-            return classifier_preds[0], classifier_preds[1], dis_classifier_preds[0], dis_classifier_preds[1], dis_classifier_preds[2], dis_classifier_preds[3], rec, mu1, mu2, logvar1, logvar2
-
         return classifier_preds[0], classifier_preds[1], dis_classifier_preds[0], dis_classifier_preds[1], dis_classifier_preds[2], dis_classifier_preds[3], rec, mu1, mu2, logvar1, logvar2
 
     def predict_label(self, input):

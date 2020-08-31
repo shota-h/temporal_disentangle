@@ -221,7 +221,10 @@ def train_TDAE_VAE_v2():
     model = model.to(device)
 
     if args.retrain:
-        model.load_state_dict(torch.load('{}/param/TDAE_test_bestparam.json'.format(out_source_dpath)))
+        if args.param == 'best':
+            model.load_state_dict(torch.load('{}/param/TDAE_test_bestparam.json'.format(out_source_dpath)))
+        else:
+            model.load_state_dict(torch.load('{}/param/TDAE_test_param.json'.format(out_source_dpath)))
         out_param_dpath = '{}/re_param'.format(out_source_dpath)
         out_board_dpath = '{}/re_runs'.format(out_source_dpath)
         out_condition_dpath = '{}/re_condition'.format(out_source_dpath)
@@ -269,11 +272,11 @@ def train_TDAE_VAE_v2():
             model.train()
             model.zero_grad()
             losses = []
-            (preds, sub_preds, preds_adv, reconst, _, p0_anchor, mu1, mu2, logvar1, logvar2) = model.forward(src[idx].to(device))
+            (preds, sub_preds, preds_adv, reconst, mu1, mu2, logvar1, logvar2) = model.forward(src[idx].to(device))
             if args.triplet:
-                (_, _, _, _, _, p0_pos, _, _, _, _) = model.forward(src[p_idx].to(device))
-                (_, _, _, _, _, p0_neg, _, _, _, _) = model.forward(src[n_idx].to(device))
-                loss_triplet = l_tri * criterion_triplet(p0_anchor, p0_pos, p0_neg)
+                (_, _, _, _, p_mu1, p_mu2, _, _) = model.forward(src[p_idx].to(device))
+                (_, _, _, _, n_mu1, n_mu2, _, _) = model.forward(src[n_idx].to(device))
+                loss_triplet = l_tri * criterion_triplet(mu2, p_mu2, n_mu2)
                 loss_triplet.backward(retain_graph=True)
             else:
                 loss_triplet = torch.Tensor([0])
@@ -326,11 +329,11 @@ def train_TDAE_VAE_v2():
                     val_loss_dict[k] = []
 
                 for v_i, (idx, p_idx, n_idx, target1, target2) in enumerate(val_loader):
-                    (preds, sub_preds, preds_adv, reconst, _, p0_anchor, mu1, mu2, logvar1, logvar2) = model.forward(src[idx].to(device))
+                    (preds, sub_preds, preds_adv, reconst, mu1, mu2, logvar1, logvar2) = model.forward(src[idx].to(device))
                     if args.triplet:
-                        (_, _, _, _, _, p0_pos, _, _, _, _) = model.forward(src[p_idx].to(device))
-                        (_, _, _, _, _, p0_neg, _, _, _, _) = model.forward(src[n_idx].to(device))
-                        val_loss_triplet = l_tri * criterion_triplet(p0_anchor, p0_pos, p0_neg)
+                        (_, _, _, _, p_mu1, p_mu2, _, _) = model.forward(src[p_idx].to(device))
+                        (_, _, _, _, n_mu1, n_mu2, _, _) = model.forward(src[n_idx].to(device))
+                        val_loss_triplet = l_tri * criterion_triplet(mu2, p_mu2, n_mu2)
                     else:
                         val_loss_triplet = torch.Tensor([0])
 
@@ -882,11 +885,10 @@ def train_TDAE_VAE_fullsuper_disentangle():
                 # loss_triplet = l_tri * criterion_triplet(mu1, p_mu1, n_mu1)
                 loss_triplet = l_tri * criterion_triplet(mu2, p_mu2, n_mu2)
                 loss_triplet.backward(retain_graph=True)
-                LossT.append(loss_triplet.item())
             else:
                 loss_triplet = torch.Tensor([0])
                 
-            loss_reconst = l_recon * criterion_vae(reconst.to(device), in_data.to(device), mu1, mu2, logvar1, logvar2)
+            loss_reconst = l_recon * criterion_vae(reconst.to(device), src[idx].to(device), mu1, mu2, logvar1, logvar2)
             loss_reconst.backward(retain_graph=True)
             loss_classifier_main = l_c * criterion_classifier(preds.to(device), target.to(device))
             loss_classifier_main.backward(retain_graph=True)
@@ -903,7 +905,7 @@ def train_TDAE_VAE_fullsuper_disentangle():
             loss_sub_no_grad = l_adv * criterion_classifier(sub_preds_adv_no_grad.to(device), target.to(device))
             loss_sub_no_grad.backward(retain_graph=True)
             optimizer.step()
-            loss = loss_classifier_main + loss_classifier_sub + loss_adv_main + loss_adv_sub +  loss_reconst + loss_main_no_grad + loss_sub_no_grad + loss_train_triplet
+            loss = loss_classifier_main + loss_classifier_sub + loss_adv_main + loss_adv_sub +  loss_reconst + loss_main_no_grad + loss_sub_no_grad + loss_triplet
 
             for k, val in zip(train_keys, [loss, loss_classifier_main, loss_classifier_sub, loss_adv_main, loss_adv_sub, loss_main_no_grad, loss_sub_no_grad, loss_reconst, loss_triplet]):
                 loss_dict[k].append(val.item())
@@ -926,10 +928,10 @@ def train_TDAE_VAE_fullsuper_disentangle():
         if (epoch + 1) % args.step == 0:
             model.eval()
             with torch.no_grad():
-                for v_i, (in_data, target1, target2) in enumerate(train_loader):
+                for v_i, (idx, _, _, _, _) in enumerate(train_loader):
                     if v_i == 0:
-                        reconst = model.reconst(in_data.to(device))
-                        np_input = in_data[0].detach().to('cpu')
+                        reconst = model.reconst(src[idx].to(device))
+                        np_input = src[idx][0].detach().to('cpu')
                         np_reconst = reconst[0].detach().to('cpu')
                         img_grid = make_grid(torch.stack([np_input, np_reconst]))
                         writer.add_image('train example', img_grid, epoch+1)
@@ -948,7 +950,7 @@ def train_TDAE_VAE_fullsuper_disentangle():
                     else:
                         val_loss_triplet = torch.Tensor([0])
                         
-                    val_loss_reconst = l_recon * criterion_vae(reconst.to(device), in_data.to(device), mu1, mu2, logvar1, logvar2)
+                    val_loss_reconst = l_recon * criterion_vae(reconst.to(device), src[idx].to(device), mu1, mu2, logvar1, logvar2)
                     val_loss_classifier_main = l_c * criterion_classifier(preds.to(device), target.to(device))
                     val_loss_classifier_sub = l_c * criterion_classifier(sub_preds.to(device), sub_target.to(device))
                     val_loss_adv_main = l_adv * negative_entropy_loss(preds_adv.to(device))
@@ -1005,13 +1007,14 @@ def val_TDAE_VAE(zero_padding=False):
     data_pairs = torch.utils.data.TensorDataset(idxs[0], idxs[1], idxs[2], targets1, targets2)
     if args.retrain:
         out_param_dpath = '{}/re_param'.format(out_source_dpath)
-        # out_val_dpath = '{}/re_val_{}'.format(out_source_dpath, args.param)
+        out_val_dpath = '{}/re_val_{}'.format(out_source_dpath, args.param)
         out_fig_dpath = '{}/re_fig_{}'.format(out_source_dpath, args.param)
     else:
         out_param_dpath = '{}/param'.format(out_source_dpath)
-        # out_val_dpath = '{}/val_{}'.format(out_source_dpath, args.param)
+        out_val_dpath = '{}/val_{}'.format(out_source_dpath, args.param)
         out_fig_dpath = '{}/fig_{}'.format(out_source_dpath, args.param)
     clean_directory(out_fig_dpath)
+    clean_directory(out_val_dpath)
 
     if args.full:
         model = TDAE_VAE_fullsuper_disentangle(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels, triplet=args.triplet)
@@ -1036,72 +1039,64 @@ def val_TDAE_VAE(zero_padding=False):
 
     train_set = torch.utils.data.dataset.Subset(data_pairs, train_indices)
     val_set = torch.utils.data.dataset.Subset(data_pairs, val_indices)
-    train_loader = DataLoader(train_set, batch_size=2, shuffle=True)
-    val_loader = DataLoader(val_set, batch_size=2, shuffle=True)
+    train_loader = DataLoader(train_set, batch_size=32, shuffle=True)
+    val_loader = DataLoader(val_set, batch_size=32, shuffle=True)
     
-    # with torch.no_grad():
-    #     model.eval()
-    #     n_s = 50
-    #     for first, loader in zip(['train', 'val'], [train_loader, val_loader]):
-    #         for n_iter, (idx, _, _, _, _) in enumerate(val_loader):
-    #             reconst = model.reconst(src[idx].to(device))
-    #             s_reconst = model.shuffle_reconst(src[idx].to(device), idx1=[0, 1], idx2=[1, 0])
-    #             np_input0 = src[idx][0].detach().to('cpu')
-    #             np_input1 = src[idx][1].detach().to('cpu')
-    #             np_reconst0 = reconst[0].detach().to('cpu')
-    #             np_reconst1 = reconst[1].detach().to('cpu')
-    #             s_np_reconst0 = s_reconst[0].detach().to('cpu')
-    #             s_np_reconst1 = s_reconst[1].detach().to('cpu')
-    #             pad0_reconst = model.fix_padding_reconst(src[idx].to(device), which_val=0, pad_val=0)
-    #             pad0_np_reconst0 = pad0_reconst[0].detach().to('cpu')
-    #             pad0_np_reconst1 = pad0_reconst[1].detach().to('cpu')
-    #             pad1_reconst = model.fix_padding_reconst(src[idx].to(device), which_val=1, pad_val=0)
-    #             pad1_np_reconst0 = pad1_reconst[0].detach().to('cpu')
-    #             pad1_np_reconst1 = pad1_reconst[1].detach().to('cpu')
-    #             fig = plt.figure(figsize=(16*4, 9*2))
-    #             ax = fig.add_subplot(2, 5, 1)
-    #             ax.set_title('1')
-    #             ax.imshow(np.transpose(np_input0, (1,2,0)))
-    #             ax = fig.add_subplot(2, 5, 2)
-    #             ax.set_title('1')
-    #             ax.imshow(np.transpose(np_reconst0, (1,2,0)))
-    #             ax = fig.add_subplot(2, 5, 3)
-    #             ax.set_title('1')
-    #             ax.imshow(np.transpose(s_np_reconst0, (1,2,0)))
-    #             ax = fig.add_subplot(2, 5, 4)
-    #             ax.set_title('1')
-    #             ax.imshow(np.transpose(pad0_np_reconst0, (1,2,0)))
-    #             ax = fig.add_subplot(2, 5, 5)
-    #             ax.set_title('1')
-    #             ax.imshow(np.transpose(pad1_np_reconst0, (1,2,0)))
-    #             ax = fig.add_subplot(2, 5, 6)
-    #             ax.set_title('2')
-    #             ax.imshow(np.transpose(np_input1, (1,2,0)))
-    #             ax = fig.add_subplot(2, 5, 7)
-    #             ax.set_title('2')
-    #             ax.imshow(np.transpose(np_reconst1, (1,2,0)))
-    #             ax = fig.add_subplot(2, 5, 8)
-    #             ax.set_title('2')
-    #             ax.imshow(np.transpose(s_np_reconst1, (1,2,0)))
-    #             ax = fig.add_subplot(2, 5, 9)
-    #             ax.set_title('2')
-    #             ax.imshow(np.transpose(pad0_np_reconst1, (1,2,0)))
-    #             ax = fig.add_subplot(2, 5, 10)
-    #             ax.set_title('2')
-    #             ax.imshow(np.transpose(pad1_np_reconst1, (1,2,0)))
-    #             fig.savefig('{}/{}_sample{:04d}.png'.format(out_val_dpath, first, n_iter))
-    #             plt.close(fig)
-    #             if n_iter >= n_s:
-    #                 break
+    with torch.no_grad():
+        model.eval()
+        n_s = 10
+        for first, loader in zip(['train', 'val'], [train_loader, val_loader]):
+            for n_iter, (idx, _, _, _, _) in enumerate(val_loader):
+                reconst = model.reconst(src[idx[:2]].to(device))
+                s_reconst = model.shuffle_reconst(src[idx].to(device), idx1=[0, 1], idx2=[1, 0])
+                pad0_reconst = model.fix_padding_reconst(src[idx[:2]].to(device), which_val=0, pad_val=0)
+                pad1_reconst = model.fix_padding_reconst(src[idx[:2]].to(device), which_val=1, pad_val=0)
+                np_input0 = src[idx[:2]][0].detach().to('cpu')
+                np_input1 = src[idx[:2]][1].detach().to('cpu')
+                np_reconst0 = reconst[0].detach().to('cpu')
+                np_reconst1 = reconst[1].detach().to('cpu')
+                s_np_reconst0 = s_reconst[0].detach().to('cpu')
+                s_np_reconst1 = s_reconst[1].detach().to('cpu')
+                pad0_np_reconst0 = pad0_reconst[0].detach().to('cpu')
+                pad0_np_reconst1 = pad0_reconst[1].detach().to('cpu')
+                pad1_np_reconst0 = pad1_reconst[0].detach().to('cpu')
+                pad1_np_reconst1 = pad1_reconst[1].detach().to('cpu')
+                fig = plt.figure(figsize=(16*4, 9*2))
+                ax = fig.add_subplot(2, 5, 1)
+                ax.set_title('1')
+                ax.imshow(np.transpose(np_input0, (1,2,0)))
+                ax = fig.add_subplot(2, 5, 2)
+                ax.set_title('1')
+                ax.imshow(np.transpose(np_reconst0, (1,2,0)))
+                ax = fig.add_subplot(2, 5, 3)
+                ax.set_title('1')
+                ax.imshow(np.transpose(s_np_reconst0, (1,2,0)))
+                ax = fig.add_subplot(2, 5, 4)
+                ax.set_title('1')
+                ax.imshow(np.transpose(pad0_np_reconst0, (1,2,0)))
+                ax = fig.add_subplot(2, 5, 5)
+                ax.set_title('1')
+                ax.imshow(np.transpose(pad1_np_reconst0, (1,2,0)))
+                ax = fig.add_subplot(2, 5, 6)
+                ax.set_title('2')
+                ax.imshow(np.transpose(np_input1, (1,2,0)))
+                ax = fig.add_subplot(2, 5, 7)
+                ax.set_title('2')
+                ax.imshow(np.transpose(np_reconst1, (1,2,0)))
+                ax = fig.add_subplot(2, 5, 8)
+                ax.set_title('2')
+                ax.imshow(np.transpose(s_np_reconst1, (1,2,0)))
+                ax = fig.add_subplot(2, 5, 9)
+                ax.set_title('2')
+                ax.imshow(np.transpose(pad0_np_reconst1, (1,2,0)))
+                ax = fig.add_subplot(2, 5, 10)
+                ax.set_title('2')
+                ax.imshow(np.transpose(pad1_np_reconst1, (1,2,0)))
+                fig.savefig('{}/{}_sample{:04d}.png'.format(out_val_dpath, first, n_iter))
+                plt.close(fig)
+                if n_iter >= n_s:
+                    break
     
-    markers = ['.', 'x']
-    colors1 = ['blue', 'orange']
-    colors2 = ['r', 'g']
-    if args.rev:
-        buff = colors1
-        colors1 = colors2
-        colors2 = buff
-        
     with torch.no_grad():
         for first, loader in zip(['train', 'val'], [train_loader, val_loader]):
             model.eval()
@@ -1119,6 +1114,30 @@ def val_TDAE_VAE(zero_padding=False):
             X2 = np.asarray(X2)
             Y1 = np.asarray(Y1)
             Y2 = np.asarray(Y2) 
+            markers = ['.', 'x']
+            colors1 = ['blue', 'orange', 'magenta']
+            colors1 = colors1[:len(np.unique(Y1))]
+            colors2 = ['r', 'g']
+            if args.rev:
+                buff = colors1
+                colors1 = colors2
+                colors2 = buff
+
+            if first == 'train':
+                logreg_main2main = LogisticRegression(penalty='l2', solver="sag")
+                logreg_main2main.fit(X1, Y1)
+                logreg_main2sub = LogisticRegression(penalty='l2', solver="sag")
+                logreg_main2sub.fit(X1, Y2)
+                logreg_sub2main = LogisticRegression(penalty='l2', solver="sag")
+                logreg_sub2main.fit(X2, Y1)
+                logreg_sub2sub = LogisticRegression(penalty='l2', solver="sag")
+                logreg_sub2sub.fit(X2, Y2)
+            
+            pred_Y11 = logreg_main2main.predict(X1)
+            pred_Y12 = logreg_main2sub.predict(X1)
+            pred_Y21 = logreg_sub2main.predict(X2)
+            pred_Y22 = logreg_sub2sub.predict(X2)
+        
             for (X, ex) in zip([X1, X2], ['main', 'sub']):
                 rn.seed(SEED)
                 np.random.seed(SEED)
@@ -1131,6 +1150,24 @@ def val_TDAE_VAE(zero_padding=False):
                         ax.scatter(x=Xt[Y==k,0], y=Xt[Y==k,1], c=co[iy], alpha=0.5, marker='.')
                     ax.set_aspect('equal', 'datalim')
                 fig.savefig('{}/{}_hidden_features_{}.png'.format(out_fig_dpath, first, ex))
+                plt.close(fig)
+
+                fig = plt.figure(figsize=(16*2, 9))
+                for ia, (Y, co) in enumerate(zip([pred_Y11, pred_Y12], [colors1, colors2])): 
+                    ax = fig.add_subplot(1,2,ia+1)
+                    for iy, k in enumerate(np.unique(Y)):
+                        ax.scatter(x=Xt[Y==k,0], y=Xt[Y==k,1], c=co[iy], alpha=0.5, marker='.')
+                    ax.set_aspect('equal', 'datalim')
+                fig.savefig('{}/{}_hidden_features_{}_ClassifierMain.png'.format(out_fig_dpath, first, ex))
+                plt.close(fig)
+
+                fig = plt.figure(figsize=(16*2, 9))
+                for ia, (Y, co) in enumerate(zip([pred_Y21, pred_Y22    ], [colors1, colors2])): 
+                    ax = fig.add_subplot(1,2,ia+1)
+                    for iy, k in enumerate(np.unique(Y)):
+                        ax.scatter(x=Xt[Y==k,0], y=Xt[Y==k,1], c=co[iy], alpha=0.5, marker='.')
+                    ax.set_aspect('equal', 'datalim')
+                fig.savefig('{}/{}_hidden_features_{}_ClassifierSub.png'.format(out_fig_dpath, first, ex))
                 plt.close(fig)
 
                 fig = plt.figure(figsize=(6*2, 6))
