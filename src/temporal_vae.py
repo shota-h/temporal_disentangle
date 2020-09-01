@@ -652,8 +652,8 @@ def val_TDAE_VAE(zero_padding=False):
 
     train_set = torch.utils.data.dataset.Subset(data_pairs, train_indices)
     val_set = torch.utils.data.dataset.Subset(data_pairs, val_indices)
-    train_loader = DataLoader(train_set, batch_size=32, shuffle=True)
-    val_loader = DataLoader(val_set, batch_size=32, shuffle=True)
+    train_loader = DataLoader(train_set, batch_size=64, shuffle=True)
+    val_loader = DataLoader(val_set, batch_size=64, shuffle=True)
     
     with torch.no_grad():
         model.eval()
@@ -724,18 +724,13 @@ def val_TDAE_VAE(zero_padding=False):
                 logreg_sub2main.fit(X2, Y1)
                 logreg_sub2sub = LogisticRegression(penalty='l2', solver="sag")
                 logreg_sub2sub.fit(X2, Y2)
-            print(first)
             for Y in [Y1, Y2]:
                 for u in np.unique(Y):
                     print(u, ':', len(Y[Y==u]), '/', len(Y))
             pred_Y11 = logreg_main2main.predict(X1)
-            print(logreg_main2main.score(X1, Y1))
             pred_Y12 = logreg_main2sub.predict(X1)
-            print(logreg_main2sub.score(X1, Y2))
             pred_Y21 = logreg_sub2main.predict(X2)
-            print(logreg_sub2main.score(X2, Y1))
             pred_Y22 = logreg_sub2sub.predict(X2)
-            print(logreg_sub2sub.score(X2, Y2))
         
             for (X, ex) in zip([X1, X2], ['main', 'sub']):
                 if ex == 'main':
@@ -883,11 +878,11 @@ def test_TDAE_VAE():
     test_indices = list(range(train_size+val_size, n_sample))
 
     train_set = torch.utils.data.dataset.Subset(data_pairs, train_indices)
-    train_loader = DataLoader(train_set, batch_size=32, shuffle=False)
+    train_loader = DataLoader(train_set, batch_size=64, shuffle=False)
     val_set = torch.utils.data.dataset.Subset(data_pairs, val_indices)
-    val_loader = DataLoader(val_set, batch_size=32, shuffle=False)
+    val_loader = DataLoader(val_set, batch_size=64, shuffle=False)
     test_set = torch.utils.data.dataset.Subset(data_pairs, test_indices)
-    test_loader = DataLoader(test_set, batch_size=32, shuffle=False)
+    test_loader = DataLoader(test_set, batch_size=64, shuffle=False)
 
     X1_dict = {}
     X2_dict = {}
@@ -931,7 +926,6 @@ def test_TDAE_VAE():
         else:
             score_nn['main'].append(pred1 / len(pY1_dict[k]))
             score_nn['sub'].append(pred2 / len(pY2_dict[k]))
-    print(score_nn)
     df = pd.DataFrame.from_dict(score_nn)
     df.to_csv('{}/ResultNN.csv'.format(out_test_dpath))
 
