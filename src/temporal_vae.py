@@ -92,6 +92,8 @@ def argparses():
     parser.add_argument('--fill', type=str, default='hp')
     parser.add_argument('--ex', type=str, default=None)
     parser.add_argument('--classifier', type=float, default=1e-1)
+    parser.add_argument('--c1', type=float, default=1)
+    parser.add_argument('--c2', type=float, default=1)
     parser.add_argument('--rec', type=float, default=1e-3)
     parser.add_argument('--adv', type=float, default=1e-2)
     parser.add_argument('--tri', type=float, default=1e-3)
@@ -483,20 +485,27 @@ def train_TDAE_VAE_fullsuper_disentangle():
                 
             loss_reconst = l_recon * criterion_vae(reconst.to(device), src[idx].to(device), mu1, mu2, logvar1, logvar2)
             loss_reconst.backward(retain_graph=True)
+
             loss_classifier_main = l_c * criterion_classifier(preds.to(device), target.to(device))
-            loss_classifier_main.backward(retain_graph=True)
+            # loss_classifier_main = l_c * criterion_classifier(preds.to(device), target.to(device))
             loss_classifier_sub = l_c * criterion_classifier(sub_preds.to(device), sub_target.to(device))
+            # loss_classifier_sub = l_c * criterion_classifier(sub_preds.to(device), sub_target.to(device))
+            loss_classifier_main.backward(retain_graph=True)
             loss_classifier_sub.backward(retain_graph=True)
+            
             loss_adv_main = l_adv * negative_entropy_loss(preds_adv.to(device))
             loss_adv_sub = l_adv * negative_entropy_loss(sub_preds_adv.to(device))
             loss_adv_main.backward(retain_graph=True)
             loss_adv_sub.backward(retain_graph=True)
+
             model.disentangle_classifiers[0].zero_grad()
             model.disentangle_classifiers[1].zero_grad()
+            
             loss_main_no_grad = l_adv * criterion_classifier(preds_adv_no_grad.to(device), sub_target.to(device))
-            loss_main_no_grad.backward(retain_graph=True)
             loss_sub_no_grad = l_adv * criterion_classifier(sub_preds_adv_no_grad.to(device), target.to(device))
+            loss_main_no_grad.backward(retain_graph=True)
             loss_sub_no_grad.backward(retain_graph=True)
+            
             optimizer.step()
             loss = loss_classifier_main + loss_classifier_sub + loss_adv_main + loss_adv_sub +  loss_reconst + loss_main_no_grad + loss_sub_no_grad + loss_triplet
 
