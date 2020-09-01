@@ -1124,15 +1124,19 @@ def main():
         return
 
     if args.mode == 'val':
+        print('call val')
         val_TDAE_VAE()
         return
     elif args.mode == 'test':
+        print('call test')
         test_TDAE_VAE()
         return
     elif args.mode == 'train':
+        print('call train')
         train_TDAE_VAE()
         return
     elif args.mode == 'conf':
+        print('call conf')
         confirm_seq()
         return
     print('call train')
