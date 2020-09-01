@@ -97,6 +97,7 @@ def make_index_rankingloss(target):
 
     return np.asarray(idx), np.asarray(labels)
 
+
 def loss_vae(recon_x, x, mu1, mu2, logvar1, logvar2):
     BCE = F.binary_cross_entropy(recon_x.view(recon_x.size(0), -1), x.view(x.size(0), -1), reduction='sum') / recon_x.size(0)
     # BCE = F.binary_cross_entropy(recon_x.view(recon_x.size(0), -1), xview(recon_x.size(0), -1), reduction='sum')

@@ -17,12 +17,20 @@ def label2onehot(label, n_class):
     onehot[label] = 1
     return onehot
 
-def clean_directory(dpath):
+def clean_directory(dpath, replace=True):
     if os.path.exists(dpath):
-        shutil.rmtree(dpath)
-        os.mkdir(dpath)
+        if replace:
+            shutil.rmtree(dpath)
+            os.mkdir(dpath)
+        else:
+            t = datetime.datetime.now()
+            t = t.strftime('%H-%M-%S')
+            dpath = dpath + '-' + t
+            os.makedirs(dpath + '-' + t)
+            return dpath + '-' + t
     else:
         os.makedirs(dpath)
+    
         
 class SetIO():
     """with構文でI/Oを切り替えるためのクラス"""
