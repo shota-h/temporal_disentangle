@@ -1222,7 +1222,7 @@ class TDAE_VAE(nn.Module):
         for i in range(len(self.classifiers)):
             classifier_preds.append(self.classifiers[i](zs[i]))
         
-        return torch.max(classifier_preds[0], 1), torch.max(classifier_preds[1], 1)
+        return torch.argmax(classifier_preds[0], 1), torch.argmax(classifier_preds[1], 1)
 
     def hidden_output(self, input):
         mu1, mu2, logvar1, logvar2 = self.encode(input)
@@ -1401,7 +1401,7 @@ class TDAE_VAE_fullsuper_disentangle(nn.Module):
         for i in range(len(self.classifiers)):
             classifier_preds.append(self.classifiers[i](zs[i]))
         
-        return torch.max(classifier_preds[0], 1), torch.max(classifier_preds[1], 1)
+        return torch.argmax(classifier_preds[0], 1), torch.argmax(classifier_preds[1], 1)
 
     def hidden_output(self, input):
         mu1, mu2, logvar1, logvar2 = self.encode(input)

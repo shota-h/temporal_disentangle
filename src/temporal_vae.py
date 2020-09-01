@@ -513,7 +513,7 @@ def train_TDAE_VAE_fullsuper_disentangle():
         for k in loss_dict.keys():
             loss_dict[k] = np.mean(loss_dict[k])
 
-        print('epoch: {} loss: {} \nAcc: {} sub Acc: {}'.format(epoch+1, loss_dict['loss/train_all'], Acc/len(train_set), sub_Acc/len(train_set)))
+        print('epoch: {:04} loss: {:.5} \nAcc: {:.5} sub Acc: {:.5}'.format(epoch+1, loss_dict['loss/train_all'], Acc/len(train_set), sub_Acc/len(train_set)))
 
         summary = scalars2summary(writer=writer,
                             tags=list(loss_dict.keys()), 
@@ -533,7 +533,8 @@ def train_TDAE_VAE_fullsuper_disentangle():
                 val_loss_dict = {}
                 for k in val_keys:
                     val_loss_dict[k] = []
-
+                val_Acc = 0
+                val_sub_Acc = 0
                 for v_i, (idx, p_idx, n_idx, target, sub_target) in enumerate(val_loader):
                     preds, sub_preds, preds_adv, preds_adv_no_grad, sub_preds_adv, sub_preds_adv_no_grad, reconst,  mu1, mu2, logvar1, logvar2 = model.forward(src[idx].to(device))
                     if args.triplet:
@@ -555,6 +556,13 @@ def train_TDAE_VAE_fullsuper_disentangle():
 
                     for k, val in zip(val_keys, [val_loss, val_loss_classifier_main, val_loss_classifier_sub, val_loss_adv_main, val_loss_adv_sub, val_loss_no_grad_main, val_loss_no_grad_sub, val_loss_reconst, val_loss_triplet]):
                         val_loss_dict[k].append(val.item())
+
+                    y_true = target.to('cpu')
+                    sub_y_true = sub_target.to('cpu')
+                    preds = preds.detach().to('cpu')
+                    sub_preds = sub_preds.detach().to('cpu')
+                    val_Acc += true_positive_multiclass(preds, y_true)
+                    val_sub_Acc += true_positive_multiclass(sub_preds, sub_y_true)
                 
                 for k in val_loss_dict.keys():
                     val_loss_dict[k] = np.mean(val_loss_dict[k])
@@ -563,9 +571,9 @@ def train_TDAE_VAE_fullsuper_disentangle():
                                         tags=list(val_loss_dict.keys()), 
                                         vals=list(val_loss_dict.values()), epoch=epoch+1)
 
-                print('epoch: {} val loss: {}'.format(epoch+1, val_loss_dict['loss/val_all']))
+                print('val loss: {:.5} Acc: {:.5} sub Acc: {:.5}'.format(val_loss_dict['loss/val_all'], val_Acc/len(val_set), val_sub_Acc/len(val_set)))
                 torch.save(model.state_dict(), '{}/TDAE_param_e{:04}.json'.format(out_param_dpath, epoch+1))
-                    
+
                 if best_loss > val_loss_dict['loss/val_all']:
                     best_epoch = epoch + 1
                     best_loss = val_loss_dict['loss/val_all']
@@ -876,26 +884,48 @@ def test_TDAE_VAE():
     X2_dict = {}
     Y1_dict = {}
     Y2_dict = {}
+    pY1_dict = {}
+    pY2_dict = {}
     with torch.no_grad():
         for k, loader in zip(['train', 'val', 'test'], [train_loader, val_loader, test_loader]):
             model.eval()
             X1, X2, Y1, Y2 = [], [], [], []
+            pY1, pY2 = [], []
             for n_iter, (idx, _, _, target, sub_target) in enumerate(loader):
                 (mu1, mu2) = model.hidden_output(src[idx].to(device))
                 mu1 = mu1.detach().to('cpu').numpy()
                 mu2 = mu2.detach().to('cpu').numpy()
+                pred_y1, pred_y2 = model.predict_label(src[idx].to(device))
                 X1.extend(mu1)
                 X2.extend(mu2)
                 Y1.extend(target.detach().to('cpu').numpy())
                 Y2.extend(sub_target.detach().to('cpu').numpy())
+                pY1.extend(pred_y1.detach().to('cpu').numpy())
+                pY2.extend(pred_y2.detach().to('cpu').numpy())
     
             X1_dict[k] = np.asarray(X1)
             X2_dict[k] = np.asarray(X2)
             Y1_dict[k] = np.asarray(Y1)
             Y2_dict[k] = np.asarray(Y2)
+            pY1_dict[k] = np.asarray(pY1)
+            pY2_dict[k] = np.asarray(pY2)
         
     tag = ['main2main', 'main2sub', 'sub2main', 'sub2sub']
     score_dict = {}
+    score_nn = {}
+    for k in ['train', 'val', 'test']:
+        pred1 = np.sum(pY1_dict[k] == Y1_dict[k])
+        pred2 = np.sum(pY2_dict[k] == Y2_dict[k])
+        if k == 'train':
+            score_nn['main'] = [pred1 / len(pY1_dict[k])]
+            score_nn['sub'] = [pred2 / len(pY2_dict[k])]
+        else:
+            score_nn['main'].append(pred1 / len(pY1_dict[k]))
+            score_nn['sub'].append(pred2 / len(pY2_dict[k]))
+    print(score_nn)
+    df = pd.DataFrame.from_dict(score_nn)
+    df.to_csv('{}/ResultNN.csv'.format(out_test_dpath))
+
     for itag, (X_dict, Y_dict) in enumerate(itertools.product([X1_dict, X2_dict], [Y1_dict, Y2_dict])):
         for k in ['train', 'val', 'test']:
             if k == 'train':
@@ -908,7 +938,6 @@ def test_TDAE_VAE():
                 score_dict[tag[itag]].append(score_reg)
             # if tag[itag] == 'sub2main':
             #     print(logreg.predict_proba(X_dict[k]))
-            print(score_dict)
             # l = logreg.predict_proba(X_dict[k])
             # p = np.argmax(l, axis=1)
             
