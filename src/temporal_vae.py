@@ -104,6 +104,7 @@ def argparses():
     parser.add_argument('--d2ae', action='store_true')
     parser.add_argument('--rev', action='store_true')
     parser.add_argument('--full', action='store_true')
+    parser.add_argument('--adapt', action='store_true')
     parser.add_argument('--ngpus', default=1)
     parser.add_argument('--channels', type=int, nargs='+', default=[3,16,32,64,128])
     return parser.parse_args()
@@ -454,22 +455,32 @@ def train_TDAE_VAE_fullsuper_disentangle():
     optimizer = optim.Adam(params)
     # optimizer = optim.SGD(params, lr=0.001)
     # scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
-    Scores_reg, Scores_reg_adv = [[], []], [[], []]
-    Vals_reg = [[], []]
     n_epochs = args.epoch
-    best_epoch = 0
-    best_loss = np.inf
+    best_epoch, best_loss = 0, np.inf
     l_adv, l_recon, l_tri, l_c = args.adv, args.rec, args.tri, args.classifier
     train_keys = ['loss/train_all', 'loss/train_classifier_main', 'loss/train_classifier_sub', 'loss/train_adv_main', 'loss/train_adv_sub', 'loss/train_no_grad_main', 'loss/train_no_grad_sub', 'loss/train_rec', 'loss/train_triplet']
     val_keys = ['loss/val_all', 'loss/val_classifier_main', 'loss/val_classifier_sub', 'loss/val_adv_main', 'loss/val_adv_sub', 'loss/val_no_grad_main', 'loss/val_no_grad_sub', 'loss/val_rec', 'loss/val_triplet']
+
+    weight_keys = ['classifier', 'adv', 'reconst', 'triplet']
+    weight_dict = {}
+    current_loss_dict = {}
+    for k, w in zip(weight_keys, [args.classifier, args.adv, args.rec, args.triplet]):
+        weight_dict[k] = w
+        current_loss_dict[k] = 0
+
     for epoch in range(n_epochs):
-        accs_p, acc_t = [], []
-        Acc, Acc_adv, sub_Acc, sub_Acc_adv  = 0, 0, 0, 0
+        Acc, sub_Acc  = 0, 0
         loss_dict = {}
         for k in train_keys:
             loss_dict[k] = []
-        # for ite, (in_data, target, sub_target) in enumerate(train_loader):
-        for ite, (idx, p_idx, n_idx, target, sub_target) in enumerate(train_loader):
+        
+        if args.adapt:
+            if epoch > 1:
+                weight_dict = dynamic_weight_average(prev_loss_dict, current_loss_dict)
+            prev_loss_dict = current_loss_dict
+            current_loss_dict = {}
+        
+        for iters, (idx, p_idx, n_idx, target, sub_target) in enumerate(train_loader):
             model.train()
             model.zero_grad()
             losses = []
@@ -478,36 +489,42 @@ def train_TDAE_VAE_fullsuper_disentangle():
                 _, _, _, _, _, _, _, p_mu1, p_mu2, _, _ = model.forward(src[p_idx].to(device))
                 _, _, _, _, _, _, _, n_mu1, n_mu2, _, _ = model.forward(src[n_idx].to(device))
                 # loss_triplet = l_tri * criterion_triplet(mu1, p_mu1, n_mu1)
-                loss_triplet = l_tri * criterion_triplet(mu2, p_mu2, n_mu2)
+                loss_triplet = weight_dict['triplet'] * criterion_triplet(mu2, p_mu2, n_mu2)
                 loss_triplet.backward(retain_graph=True)
             else:
                 loss_triplet = torch.Tensor([0])
                 
-            loss_reconst = l_recon * criterion_vae(reconst.to(device), src[idx].to(device), mu1, mu2, logvar1, logvar2)
+            loss_reconst = weight_dict['reconst'] * criterion_vae(reconst.to(device), src[idx].to(device), mu1, mu2, logvar1, logvar2)
             loss_reconst.backward(retain_graph=True)
 
-            loss_classifier_main = l_c * criterion_classifier(preds.to(device), target.to(device))
+            loss_classifier_main = weight_dict['classifier'] * criterion_classifier(preds.to(device), target.to(device))
+            loss_classifier_sub = weight_dict['classifier'] * criterion_classifier(sub_preds.to(device), sub_target.to(device))
             # loss_classifier_main = l_c * criterion_classifier(preds.to(device), target.to(device))
-            loss_classifier_sub = l_c * criterion_classifier(sub_preds.to(device), sub_target.to(device))
             # loss_classifier_sub = l_c * criterion_classifier(sub_preds.to(device), sub_target.to(device))
             loss_classifier_main.backward(retain_graph=True)
             loss_classifier_sub.backward(retain_graph=True)
             
-            loss_adv_main = l_adv * negative_entropy_loss(preds_adv.to(device))
-            loss_adv_sub = l_adv * negative_entropy_loss(sub_preds_adv.to(device))
+            loss_adv_main = weight_dict['adv'] * negative_entropy_loss(preds_adv.to(device))
+            loss_adv_sub = weight_dict['adv'] * negative_entropy_loss(sub_preds_adv.to(device))
             loss_adv_main.backward(retain_graph=True)
             loss_adv_sub.backward(retain_graph=True)
 
             model.disentangle_classifiers[0].zero_grad()
             model.disentangle_classifiers[1].zero_grad()
             
-            loss_main_no_grad = l_adv * criterion_classifier(preds_adv_no_grad.to(device), sub_target.to(device))
-            loss_sub_no_grad = l_adv * criterion_classifier(sub_preds_adv_no_grad.to(device), target.to(device))
+            loss_main_no_grad = weight_dict['adv'] * criterion_classifier(preds_adv_no_grad.to(device), sub_target.to(device))
+            loss_sub_no_grad = weight_dict['adv'] * criterion_classifier(sub_preds_adv_no_grad.to(device), target.to(device))
             loss_main_no_grad.backward(retain_graph=True)
             loss_sub_no_grad.backward(retain_graph=True)
             
             optimizer.step()
             loss = loss_classifier_main + loss_classifier_sub + loss_adv_main + loss_adv_sub +  loss_reconst + loss_main_no_grad + loss_sub_no_grad + loss_triplet
+
+            if args.adapt:
+                current_path['classifier'] += loss_classifier_main.item() + loss_classifier_sub.item()
+                current_path['reconst'] += loss_reconst.item()
+                current_path['adv'] += loss_adv_main.item() + loss_adv_sub.item() + loss_main_no_grad.item() + loss_sub_no_grad.item()
+                current_path['triplet'] += loss_triplet.item()
 
             for k, val in zip(train_keys, [loss, loss_classifier_main, loss_classifier_sub, loss_adv_main, loss_adv_sub, loss_main_no_grad, loss_sub_no_grad, loss_reconst, loss_triplet]):
                 loss_dict[k].append(val.item())
