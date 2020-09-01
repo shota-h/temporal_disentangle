@@ -115,7 +115,7 @@ def get_triplet_flatted_data(data_dpath):
     return (src, p_src, n_src), target1, target2
 
 
-def get_triplet_flatted_data_with_idx(data_dpath):
+def get_triplet_flatted_data_with_idx(data_dpath, label_decomp=True):
     src = []
     idx, p_idx, n_idx = [], [], []
     target1, target2 = [], []
@@ -146,12 +146,15 @@ def get_triplet_flatted_data_with_idx(data_dpath):
                     target1.append(f[child_group].attrs['part'])
                     target2.append(f[child_group].attrs['mayo'])
                     inc += 1
-                    if 'colon' in data_dpath:
-                        if target2[-1] > 1:
-                            target2[-1] = 1
-                        elif target2[-1] <= 1:
-                            target2[-1] = 0
-        
+                    # if 'colon' in data_dpath:
+                    #     if label_decomp:
+                    #         if target2[-1] > 1:
+                    #             target2[-1] = 1
+                    #         elif target2[-1] <= 1:
+                    #             target2[-1] = 0
+    if 'colon' in data_dpath:
+        if label_decomp:
+            target2 = [1 if cat_target2 > 1 else 0 for cat_target2 in target2]
     src = np.asarray(src)
     idx = np.array(idx)
     p_idx = np.array(p_idx)

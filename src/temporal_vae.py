@@ -1005,6 +1005,7 @@ def val_TDAE_VAE(zero_padding=False):
         # srcs, targets1, targets2 = get_flatted_data(data_path)
         src, targets1, targets2, idxs = get_triplet_flatted_data_with_idx(data_path)
     data_pairs = torch.utils.data.TensorDataset(idxs[0], idxs[1], idxs[2], targets1, targets2)
+
     if args.retrain:
         out_param_dpath = '{}/re_param'.format(out_source_dpath)
         out_val_dpath = '{}/re_val_{}'.format(out_source_dpath, args.param)
@@ -1017,6 +1018,7 @@ def val_TDAE_VAE(zero_padding=False):
     clean_directory(out_val_dpath)
 
     if args.full:
+        # model = TDAE_VAE_fullsuper_disentangle(n_classes=[3, 2], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels, triplet=args.triplet)
         model = TDAE_VAE_fullsuper_disentangle(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels, triplet=args.triplet)
     else:
         model = TDAE_VAE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels, triplet=args.triplet)
@@ -1046,7 +1048,7 @@ def val_TDAE_VAE(zero_padding=False):
         model.eval()
         n_s = 10
         for first, loader in zip(['train', 'val'], [train_loader, val_loader]):
-            for n_iter, (idx, _, _, _, _) in enumerate(val_loader):
+            for n_iter, (idx, _, _, t1, t2) in enumerate(val_loader):
                 reconst = model.reconst(src[idx[:2]].to(device))
                 s_reconst = model.shuffle_reconst(src[idx].to(device), idx1=[0, 1], idx2=[1, 0])
                 pad0_reconst = model.fix_padding_reconst(src[idx[:2]].to(device), which_val=0, pad_val=0)
@@ -1061,13 +1063,15 @@ def val_TDAE_VAE(zero_padding=False):
                 pad0_np_reconst1 = pad0_reconst[1].detach().to('cpu')
                 pad1_np_reconst0 = pad1_reconst[0].detach().to('cpu')
                 pad1_np_reconst1 = pad1_reconst[1].detach().to('cpu')
+                np_t1 = t1[:2].detach().to('cpu')
+                np_t2 = t2[:2].detach().to('cpu')
                 fig = plt.figure(figsize=(16*4, 9*2))
                 for ii, npimg in enumerate([np_input0, np_reconst0, s_np_reconst0, pad0_np_reconst0, pad1_np_reconst0, np_input1, np_reconst1, s_np_reconst1, pad0_np_reconst1, pad1_np_reconst1]):
                     ax = fig.add_subplot(2, 5, ii+1)
                     if ii < 5:
-                        ax.set_title('1')
+                        ax.set_title('{}:{}'.format(np_t1[0], np_t2[0]))
                     else:
-                        ax.set_title('2')
+                        ax.set_title('{}:{}'.format(np_t1[1], np_t2[1]))
                     ax.imshow(np.transpose(npimg, (1,2,0)))
                 fig.savefig('{}/{}_sample{:04d}.png'.format(out_val_dpath, first, n_iter))
                 plt.close(fig)
@@ -1213,6 +1217,15 @@ def val_TDAE_VAE(zero_padding=False):
                 fig.savefig('{}/{}_decomp_tsne_{}.png'.format(out_fig_dpath, first, ex))
                 plt.close(fig)
 
+                fig = plt.figure(figsize=(16*2, 9))
+                for ia, (Y, co) in enumerate(zip([pred_Y1, pred_Y2], [colors1, colors2])):
+                    ax = fig.add_subplot(1,2,ia+1)
+                    for iy, k in enumerate(np.unique(Y)):
+                        ax.scatter(cat_tsne_feature[Y==k, 0], cat_tsne_feature[Y==k, 1], alpha=0.5, c=co[iy], marker='.')
+                        ax.set_aspect('equal', 'datalim')
+                fig.savefig('{}/{}_decomp_tsne_Classifier{}.png'.format(out_fig_dpath, first, ex))
+                plt.close(fig)
+
 
 def test_TDAE_VAE():
     img_w, img_h, out_source_dpath, data_path, ex = get_outputpath()
@@ -1292,15 +1305,15 @@ def test_TDAE_VAE():
     for itag, (X_dict, Y_dict) in enumerate(itertools.product([X1_dict, X2_dict], [Y1_dict, Y2_dict])):
         for k in ['train', 'val', 'test']:
             if k == 'train':
-                logreg = LogisticRegression(penalty='l2', solver="sag")
+                logreg = LogisticRegression(solver="sag", max_iter=200)
                 logreg.fit(X_dict[k], Y_dict[k])
                 score_reg = logreg.score(X_dict[k], Y_dict[k])
                 score_dict[tag[itag]] = [score_reg]
             else:
                 score_reg = logreg.score(X_dict[k], Y_dict[k])
                 score_dict[tag[itag]].append(score_reg)
-            if tag[itag] == 'sub2main':
-                print(logreg.predict_proba(X_dict[k]))
+            # if tag[itag] == 'sub2main':
+            #     print(logreg.predict_proba(X_dict[k]))
             print(score_dict)
             # l = logreg.predict_proba(X_dict[k])
             # p = np.argmax(l, axis=1)
