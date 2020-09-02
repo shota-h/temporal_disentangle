@@ -40,7 +40,7 @@ import tensorboardX as tbx
 from losses import TripletLoss, negative_entropy_loss, Fourier_mse, loss_vae
 from metrics import true_positive_multiclass, true_positive, true_negative
 from __init__ import clean_directory, SetIO
-from data_handling import get_triplet_flatted_data, get_flatted_data, get_triplet_flatted_data_with_idx
+from data_handling import get_triplet_flatted_data_with_idx, random_label_replace
 from archs import TDAE_VAE
 from archs import TDAE_VAE_fullsuper_disentangle
 
@@ -97,13 +97,16 @@ def argparses():
     parser.add_argument('--rec', type=float, default=1e-3)
     parser.add_argument('--adv', type=float, default=1e-2)
     parser.add_argument('--tri', type=float, default=1e-3)
+    parser.add_argument('--ratio', type=float, default=0.1)
     parser.add_argument('--margin', type=float, default=1e-1)
     parser.add_argument('--triplet', action='store_true')
     parser.add_argument('--retrain', action='store_true')
+    parser.add_argument('--replace', action='store_true')
     parser.add_argument('--fou', action='store_true')
     parser.add_argument('--rev', action='store_true')
     parser.add_argument('--full', action='store_true')
     parser.add_argument('--adapt', action='store_true')
+    parser.add_argument('--semi', action='store_true')
     parser.add_argument('--labeldecomp', action='store_false')
     parser.add_argument('--ngpus', default=1)
     parser.add_argument('--channels', type=int, nargs='+', default=[3,16,32,64,128])
@@ -339,7 +342,7 @@ def train_TDAE_VAE():
         if (epoch + 1) % args.step == 0:
             model.eval()
             with torch.no_grad():
-                for v_i, (idx, p_idx, n_idx, target1, target2) in enumerate(train_loader):
+                for v_i, (idx, p_idx, n_idx, _, _) in enumerate(train_loader):
                     if v_i == 0:
                         reconst = model.reconst(src[idx].to(device))
                         np_input = src[idx[0]].detach().to('cpu')
@@ -351,7 +354,7 @@ def train_TDAE_VAE():
                 for k in val_keys:
                     val_loss_dict[k] = []
 
-                for v_i, (idx, p_idx, n_idx, target1, target2) in enumerate(val_loader):
+                for v_i, (idx, p_idx, n_idx, target, _) in enumerate(val_loader):
                     (preds, sub_preds, preds_adv, reconst, mu1, mu2, logvar1, logvar2) = model.forward(src[idx].to(device))
                     if args.triplet:
                         (_, _, _, _, p_mu1, p_mu2, _, _) = model.forward(src[p_idx].to(device))
@@ -361,8 +364,8 @@ def train_TDAE_VAE():
                         val_loss_triplet = torch.Tensor([0])
 
                     val_loss_reconst = weight_dict['reconst'] * criterion_vae(reconst.to(device), src[idx].to(device), mu1, mu2, logvar1, logvar2)
-                    val_loss_classifier_main = weight_dict['classifier'] * criterion_classifier(preds.to(device), target1.to(device))
-                    val_loss_classifier_sub = weight_dict['adv'] * criterion_classifier(preds_adv.to(device), target1.to(device))
+                    val_loss_classifier_main = weight_dict['classifier'] * criterion_classifier(preds.to(device), target.to(device))
+                    val_loss_classifier_sub = weight_dict['adv'] * criterion_classifier(preds_adv.to(device), target.to(device))
                     val_loss_adv = weight_dict['adv'] * negative_entropy_loss(sub_preds.to(device))
                     val_loss = val_loss_reconst + val_loss_classifier_main + val_loss_adv + val_loss_classifier_sub + val_loss_triplet
                     
@@ -401,6 +404,13 @@ def train_TDAE_VAE():
     writer.close()
 
 
+def pseudo_label_update(model, inputs):
+    with torch.no_grad():
+        model.eval()
+        _, pred_pseudo_label = model.predict_label(inputs)
+    return pred_pseudo_label
+
+
 def train_TDAE_VAE_fullsuper_disentangle():
     args = argparses()
     img_w, img_h, out_source_dpath, data_path, ex = get_outputpath()
@@ -411,6 +421,13 @@ def train_TDAE_VAE_fullsuper_disentangle():
         src, targets2, targets1, idxs = get_triplet_flatted_data_with_idx(data_path, label_decomp=args.labeldecomp)
     else:
         src, targets1, targets2, idxs = get_triplet_flatted_data_with_idx(data_path, label_decomp=args.labeldecomp)
+        
+    if args.semi:
+        true_targets2 = copy.deepcopy(targets2)
+        targets2 = random_label_replace(targets2, ratio=args.ratio, value=-2)
+        pseudo_label = torch.randint(low=0, high=torch.unique(true_targets2).size(0), size=targets2.size())
+        pseudo_label[targets2 != -2] = -2
+    
     data_pairs = torch.utils.data.TensorDataset(idxs[0], idxs[1], idxs[2], targets1, targets2)
         
     model = TDAE_VAE_fullsuper_disentangle(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels, triplet=args.triplet)
@@ -484,15 +501,13 @@ def train_TDAE_VAE_fullsuper_disentangle():
         for k in train_keys:
             loss_dict[k] = []
         
-        print(weight_dict)
         if args.adapt:
             if epoch > 1:
                 prev_dict = {}
                 current_dict = {}
                 for k in current_loss_dict.keys():
-                    if prev_loss_dict[k] > 0:
+                    if prev_loss_dict[k] > 0 and current_loss_dict[k] > 0:
                         prev_dict[k] = prev_loss_dict[k]
-                    if current_loss_dict[k] > 0:
                         current_dict[k] = current_loss_dict[k]
                 new_weight_dict = dynamic_weight_average(prev_dict, current_dict)
                 for k in new_weight_dict.keys():
@@ -536,6 +551,9 @@ def train_TDAE_VAE_fullsuper_disentangle():
             loss_sub_no_grad = weight_dict['adv_sub'] * criterion_classifier(sub_preds_adv_no_grad.to(device), target.to(device))
             loss_main_no_grad.backward(retain_graph=True)
             loss_sub_no_grad.backward(retain_graph=True)
+            if args.semi:
+                loss_classifier_pseudo_label = 0.1 * weight_dict['adv_main'] * criterion_classifier(preds_adv_no_grad.to(device), pseudo_label[idx].to(device))
+                loss_classifier_pseudo_label.backward(retain_graph=True)
             
             optimizer.step()
             loss = loss_classifier_main + loss_classifier_sub + loss_adv_main + loss_adv_sub +  loss_reconst + loss_main_no_grad + loss_sub_no_grad + loss_triplet
@@ -567,10 +585,15 @@ def train_TDAE_VAE_fullsuper_disentangle():
         summary = scalars2summary(writer=writer,
                             tags=list(loss_dict.keys()), 
                             vals=list(loss_dict.values()), epoch=epoch+1)
+        
+        if args.semi:
+            for _, (idx, _, _, _, _) in enumerate(train_loader):
+                pseudo_label[idx] = pseudo_label_update(model, src[idx])
+            pseudo_label[targets2 != -2] = -2
 
         if (epoch + 1) % args.step == 0:
-            model.eval()
             with torch.no_grad():
+                model.eval()
                 for v_i, (idx, _, _, _, _) in enumerate(train_loader):
                     if v_i == 0:
                         reconst = model.reconst(src[idx].to(device))
@@ -639,7 +662,6 @@ def train_TDAE_VAE_fullsuper_disentangle():
     if args.adapt:
         df = pd.DataFrame.from_dict(weight_change)
         df.to_csv('{}/WeightChange.csv'.format(out_condition_dpath))
-
 
 
 def val_TDAE_VAE(zero_padding=False):

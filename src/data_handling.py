@@ -1,5 +1,7 @@
+import random as rn
 import numpy as np
 import h5py
+import copy
 import torch
 
 
@@ -146,12 +148,7 @@ def get_triplet_flatted_data_with_idx(data_dpath, label_decomp=True):
                     target1.append(f[child_group].attrs['part'])
                     target2.append(f[child_group].attrs['mayo'])
                     inc += 1
-                    # if 'colon' in data_dpath:
-                    #     if label_decomp:
-                    #         if target2[-1] > 1:
-                    #             target2[-1] = 1
-                    #         elif target2[-1] <= 1:
-                    #             target2[-1] = 0
+
     if 'colon' in data_dpath:
         if label_decomp:
             target2 = [1 if cat_target2 > 1 else 0 for cat_target2 in target2]
@@ -171,3 +168,17 @@ def get_triplet_flatted_data_with_idx(data_dpath, label_decomp=True):
     p_idx = torch.from_numpy(p_idx).long()
     n_idx = torch.from_numpy(n_idx).long()
     return src, target1, target2, (idx, p_idx, n_idx)
+
+
+def random_label_replace(src, ratio=0.1, value=-1, seed=1):
+    torch.manual_seed(seed)
+    rn.seed(seed)
+    np.random.seed(seed)
+    
+    dst = copy.deepcopy(src[:])
+    for uniq_src in np.unique(src):
+        idx = np.where(src==uniq_src)[0]
+        pick_idx = np.random.choice(idx, size=int(len(idx)*ratio))
+        dst[pick_idx] = value
+        
+    return dst
