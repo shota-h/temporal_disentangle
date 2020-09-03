@@ -408,7 +408,7 @@ def pseudo_label_update(model, inputs):
     with torch.no_grad():
         model.eval()
         _, pred_pseudo_label = model.predict_label(inputs)
-    return pred_pseudo_label
+    return pred_pseudo_label.to('cpu')
 
 
 def train_TDAE_VAE_fullsuper_disentangle():
@@ -422,15 +422,15 @@ def train_TDAE_VAE_fullsuper_disentangle():
     else:
         src, targets1, targets2, idxs = get_triplet_flatted_data_with_idx(data_path, label_decomp=args.labeldecomp)
         
+    true_targets2 = copy.deepcopy(targets2)
     if args.semi:
-        true_targets2 = copy.deepcopy(targets2)
         targets2 = random_label_replace(targets2, ratio=args.ratio, value=-2)
         pseudo_label = torch.randint(low=0, high=torch.unique(true_targets2).size(0), size=targets2.size())
         pseudo_label[targets2 != -2] = -2
     
     data_pairs = torch.utils.data.TensorDataset(idxs[0], idxs[1], idxs[2], targets1, targets2)
         
-    model = TDAE_VAE_fullsuper_disentangle(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels, triplet=args.triplet)
+    model = TDAE_VAE_fullsuper_disentangle(n_classes=[torch.unique(targets1).size(0), torch.unique(true_targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels, triplet=args.triplet)
     if args.retrain:
         model.load_state_dict(torch.load('{}/param/TDAE_test_bestparam.json'.format(out_source_dpath)))
         out_param_dpath = '{}/re_param'.format(out_source_dpath)
@@ -477,8 +477,8 @@ def train_TDAE_VAE_fullsuper_disentangle():
     n_epochs = args.epoch
     best_epoch, best_loss = 0, np.inf
     l_adv, l_recon, l_tri, l_c = args.adv, args.rec, args.tri, args.classifier
-    train_keys = ['loss/train_all', 'loss/train_classifier_main', 'loss/train_classifier_sub', 'loss/train_adv_main', 'loss/train_adv_sub', 'loss/train_no_grad_main', 'loss/train_no_grad_sub', 'loss/train_rec', 'loss/train_triplet']
-    val_keys = ['loss/val_all', 'loss/val_classifier_main', 'loss/val_classifier_sub', 'loss/val_adv_main', 'loss/val_adv_sub', 'loss/val_no_grad_main', 'loss/val_no_grad_sub', 'loss/val_rec', 'loss/val_triplet']
+    train_keys = ['loss/train_all', 'loss/train_classifier_main', 'loss/train_classifier_sub', 'loss/train_adv_main', 'loss/train_adv_sub', 'loss/train_no_grad_main', 'loss/train_no_grad_sub', 'loss/train_rec', 'loss/train_triplet', 'loss/train_pseudo_adv', 'loss/train_pseudo_classifier']
+    val_keys = ['loss/val_all', 'loss/val_classifier_main', 'loss/val_classifier_sub', 'loss/val_adv_main', 'loss/val_adv_sub', 'loss/val_no_grad_main', 'loss/val_no_grad_sub', 'loss/val_rec', 'loss/val_triplet', 'loss/val_pseudo_adv', 'loss/val_pseudo_classifier']
 
     weight_keys = ['classifier_main', 'classifier_sub', 'adv_main', 'adv_sub', 'reconst']
     w_args = [args.classifier, args.classifier, args.adv, args.adv, args.rec]
@@ -531,13 +531,21 @@ def train_TDAE_VAE_fullsuper_disentangle():
             else:
                 loss_triplet = torch.Tensor([0])
                 
-            loss_reconst = weight_dict['reconst'] * criterion_vae(reconst.to(device), src[idx].to(device), mu1, mu2, logvar1, logvar2)
-            loss_reconst.backward(retain_graph=True)
-
+            if weight_dict['reconst'] > 0:
+                loss_reconst = weight_dict['reconst'] * criterion_vae(reconst.to(device), src[idx].to(device), mu1, mu2, logvar1, logvar2)
+                loss_reconst.backward(retain_graph=True)
+            else:
+                loss_reconst = torch.Tensor([0])
+            
             loss_classifier_main = weight_dict['classifier_main'] * criterion_classifier(preds.to(device), target.to(device))
             loss_classifier_sub = weight_dict['classifier_sub'] * criterion_classifier(sub_preds.to(device), sub_target.to(device))
             loss_classifier_main.backward(retain_graph=True)
             loss_classifier_sub.backward(retain_graph=True)
+            if args.semi:
+                loss_pseudo_classifier = 0.1 * weight_dict['classifier_sub'] * criterion_classifier(sub_preds.to(device), pseudo_label[idx].to(device))
+                loss_pseudo_classifier.backward(retain_graph=True)
+            else:
+                loss_pseudo_classifier = torch.Tensor([0])
             
             loss_adv_main = weight_dict['adv_main'] * negative_entropy_loss(preds_adv.to(device))
             loss_adv_sub = weight_dict['adv_sub'] * negative_entropy_loss(sub_preds_adv.to(device))
@@ -552,11 +560,13 @@ def train_TDAE_VAE_fullsuper_disentangle():
             loss_main_no_grad.backward(retain_graph=True)
             loss_sub_no_grad.backward(retain_graph=True)
             if args.semi:
-                loss_classifier_pseudo_label = 0.1 * weight_dict['adv_main'] * criterion_classifier(preds_adv_no_grad.to(device), pseudo_label[idx].to(device))
-                loss_classifier_pseudo_label.backward(retain_graph=True)
+                loss_pseudo_label = 0.1 * weight_dict['adv_main'] * criterion_classifier(preds_adv_no_grad.to(device), pseudo_label[idx].to(device))
+                loss_pseudo_label.backward(retain_graph=True)
+            else:
+                loss_pseudo_label = torch.Tensor([0])
             
             optimizer.step()
-            loss = loss_classifier_main + loss_classifier_sub + loss_adv_main + loss_adv_sub +  loss_reconst + loss_main_no_grad + loss_sub_no_grad + loss_triplet
+            loss = loss_classifier_main + loss_classifier_sub + loss_adv_main + loss_adv_sub +  loss_reconst + loss_main_no_grad + loss_sub_no_grad + loss_triplet + loss_pseudo_label + loss_pseudo_classifier
 
             if args.adapt:
                 current_loss_dict['classifier_main'] += loss_classifier_main.item() + loss_classifier_sub.item()
@@ -567,16 +577,16 @@ def train_TDAE_VAE_fullsuper_disentangle():
                 if args.triplet:
                     current_loss_dict['triplet'] += loss_triplet.item()
 
-            for k, val in zip(train_keys, [loss, loss_classifier_main, loss_classifier_sub, loss_adv_main, loss_adv_sub, loss_main_no_grad, loss_sub_no_grad, loss_reconst, loss_triplet]):
+            for k, val in zip(train_keys, [loss, loss_classifier_main, loss_classifier_sub, loss_adv_main, loss_adv_sub, loss_main_no_grad, loss_sub_no_grad, loss_reconst, loss_triplet, loss_pseudo_label, loss_pseudo_classifier]):
                 loss_dict[k].append(val.item())
             
             y_true = target.to('cpu')
-            sub_y_true = sub_target.to('cpu')
+            sub_y_true = true_targets2[idx].to('cpu')
             preds = preds.detach().to('cpu')
             sub_preds = sub_preds.detach().to('cpu')
             Acc += true_positive_multiclass(preds, y_true)
             sub_Acc += true_positive_multiclass(sub_preds, sub_y_true)
-
+                    
         for k in loss_dict.keys():
             loss_dict[k] = np.mean(loss_dict[k])
 
@@ -586,11 +596,6 @@ def train_TDAE_VAE_fullsuper_disentangle():
                             tags=list(loss_dict.keys()), 
                             vals=list(loss_dict.values()), epoch=epoch+1)
         
-        if args.semi:
-            for _, (idx, _, _, _, _) in enumerate(train_loader):
-                pseudo_label[idx] = pseudo_label_update(model, src[idx])
-            pseudo_label[targets2 != -2] = -2
-
         if (epoch + 1) % args.step == 0:
             with torch.no_grad():
                 model.eval()
@@ -616,8 +621,17 @@ def train_TDAE_VAE_fullsuper_disentangle():
                         val_loss_triplet = weight_dict['triplet'] * criterion_triplet(mu2, p_mu2, n_mu2)
                     else:
                         val_loss_triplet = torch.Tensor([0])
-                        
-                    val_loss_reconst = weight_dict['reconst'] * criterion_vae(reconst.to(device), src[idx].to(device), mu1, mu2, logvar1, logvar2)
+                    
+                    if args.semi:
+                        val_loss_pseudo_label = 0.1 * weight_dict['adv_main'] * criterion_classifier(preds_adv_no_grad.to(device), pseudo_label[idx].to(device))
+                        val_loss_pseudo_classifier = 0.1 * weight_dict['classifier_sub'] * criterion_classifier(sub_preds.to(device), pseudo_label[idx].to(device))
+                    else:
+                        val_loss_pseudo_label = torch.Tensor([0])
+                        val_loss_pseudo_classifier = torch.Tensor([0])
+                    if weight_dict['reconst'] > 0:
+                        val_loss_reconst = weight_dict['reconst'] * criterion_vae(reconst.to(device), src[idx].to(device), mu1, mu2, logvar1, logvar2)
+                    else:
+                        val_loss_reconst = torch.Tensor([0])
                     val_loss_classifier_main = weight_dict['classifier_main'] * criterion_classifier(preds.to(device), target.to(device))
                     val_loss_classifier_sub = weight_dict['classifier_sub'] * criterion_classifier(sub_preds.to(device), sub_target.to(device))
 
@@ -626,13 +640,13 @@ def train_TDAE_VAE_fullsuper_disentangle():
                     val_loss_no_grad_main = weight_dict['adv_main'] * criterion_classifier(preds_adv_no_grad.to(device), sub_target.to(device))
                     val_loss_no_grad_sub = weight_dict['adv_sub'] * criterion_classifier(sub_preds_adv_no_grad.to(device), target.to(device))
                     
-                    val_loss = val_loss_reconst + val_loss_classifier_main + val_loss_classifier_sub + val_loss_adv_main + val_loss_no_grad_main + val_loss_classifier_sub + val_loss_adv_sub + val_loss_no_grad_sub + val_loss_triplet
+                    val_loss = val_loss_reconst + val_loss_classifier_main + val_loss_classifier_sub + val_loss_adv_main + val_loss_no_grad_main + val_loss_classifier_sub + val_loss_adv_sub + val_loss_no_grad_sub + val_loss_triplet + val_loss_pseudo_label + val_loss_pseudo_classifier
 
-                    for k, val in zip(val_keys, [val_loss, val_loss_classifier_main, val_loss_classifier_sub, val_loss_adv_main, val_loss_adv_sub, val_loss_no_grad_main, val_loss_no_grad_sub, val_loss_reconst, val_loss_triplet]):
+                    for k, val in zip(val_keys, [val_loss, val_loss_classifier_main, val_loss_classifier_sub, val_loss_adv_main, val_loss_adv_sub, val_loss_no_grad_main, val_loss_no_grad_sub, val_loss_reconst, val_loss_triplet, val_loss_pseudo_label, val_loss_pseudo_classifier]):
                         val_loss_dict[k].append(val.item())
 
                     y_true = target.to('cpu')
-                    sub_y_true = sub_target.to('cpu')
+                    sub_y_true = true_targets2[idx].to('cpu')
                     preds = preds.detach().to('cpu')
                     sub_preds = sub_preds.detach().to('cpu')
                     val_Acc += true_positive_multiclass(preds, y_true)
@@ -652,6 +666,11 @@ def train_TDAE_VAE_fullsuper_disentangle():
                     best_epoch = epoch + 1
                     best_loss = val_loss_dict['loss/val_all']
                     torch.save(model.state_dict(), '{}/TDAE_test_bestparam.json'.format(out_param_dpath))
+        if args.semi:
+            for _, (idx, _, _, _, _) in enumerate(train_loader):
+                pseudo_label[idx] = pseudo_label_update(model, src[idx].to(device))
+            pseudo_label[targets2 != -2] = -2
+
 
     torch.save(model.state_dict(), '{}/TDAE_test_param.json'.format(out_param_dpath))
     
@@ -770,7 +789,7 @@ def val_TDAE_VAE(zero_padding=False):
             markers = ['.', 'x']
             colors1 = ['blue', 'orange', 'magenta']
             colors1 = colors1[:len(np.unique(Y1))]
-            colors2 = ['r', 'g']
+            colors2 = ['r', 'g', 'y']
             if args.rev:
                 buff = colors1
                 colors1 = colors2
