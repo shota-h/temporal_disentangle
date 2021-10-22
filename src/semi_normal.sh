@@ -1,0 +1,5 @@
+python3 src/temp_consist_drl.py --semi --ratio 0.0 --classifier 1 --adv 0.0 --batch 32 --epoch 100 --ex normal_adaptalpha_c1_r00 --data $1 --train --val --test --step 1 --use_pseudo --adapt_alpha --T1 30 --T2 60 --alpha 2
+python3 src/temp_consist_drl.py --semi --ratio 0.2 --classifier 1 --adv 0.0  --batch 32 --epoch 100 --ex normal_adaptalpha_c1_r02 --data $1 --train --val --test --step 1 --use_pseudo --adapt_alpha --T1 30 --T2 60 --alpha 2
+python3 src/temp_consist_drl.py --semi --ratio 0.4 --classifier 1 --adv 0.0  --batch 32 --epoch 100 --ex normal_adaptalpha_c1_r04 --data $1 --train --val --test --step 1 --use_pseudo --adapt_alpha --T1 30 --T2 60 --alpha 2
+python3 src/temp_consist_drl.py --semi --ratio 0.6 --classifier 1 --adv 0.0  --batch 32 --epoch 100 --ex normal_adaptalpha_c1_r06 --data $1 --train --val --test --step 1 --use_pseudo --adapt_alpha --T1 30 --T2 60 --alpha 2
+python3 src/temp_consist_drl.py --semi --ratio 0.8 --classifier 1 --adv 0.0  --batch 32 --epoch 100 --ex normal_adaptalpha_c1_r08 --data $1 --train --val --test --step 1 --use_pseudo --adapt_alpha --T1 30 --T2 60 --alpha 2

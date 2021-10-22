@@ -39,9 +39,8 @@ from losses import TripletLoss, negative_entropy_loss, Fourier_mse, loss_vae
 from metrics import true_positive_multiclass, true_positive, true_negative
 from __init__ import clean_directory, SetIO
 from data_handling import get_triplet_flatted_data, get_flatted_data, get_triplet_flatted_data_with_idx
-from archs import TDAE_out, TDAE, base_classifier, TDAE_VAE
-from archs import TestNet as TDAE_D2AE
-from archs import TestNet_v2 as TDAE_D2AE_v2
+from archs import base_classifier
+from archs import TDAE_D2AE
 
 SEED = 1
 torch.manual_seed(SEED)
@@ -614,8 +613,7 @@ def triplet_train_TDAE_fullsuper():
     train_loader = DataLoader(train_set, batch_size=args.batch, shuffle=True)
     val_loader = DataLoader(val_set, batch_size=args.batch, shuffle=False)
 
-    if args.d2ae:
-        model = TDAE_D2AE_v2(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels, triplet=args.triplet)
+    model = TDAE_D2AE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels, triplet=args.triplet)
 
     if args.ngpus > 1:
         g_list = [i for i in range(args.ngpus)]
@@ -850,10 +848,7 @@ def train_TDAE_v2():
 
     # if args.dlim > 0:
     #     data_pairs = torch.utils.data.TensorDataset(srcs[0][:args.dlim], srcs[1][:args.dlim], srcs[2][:args.dlim], targets1[:args.dlim], targets2[:args.dlim])
-    if args.d2ae:
-        model = TDAE_D2AE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels)
-    else:
-        model = TDAE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels)
+    model = TDAE_D2AE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels)
 
     if args.retrain:
         model.load_state_dict(torch.load('{}/param/TDAE_test_param.json'.format(out_source_dpath)))
@@ -1067,10 +1062,7 @@ def train_TDAE_fullsuper():
     # if args.dlim > 0:
     #     data_pairs = torch.utils.data.TensorDataset(srcs[0][:args.dlim], srcs[1][:args.dlim], srcs[2][:args.dlim], targets1[:args.dlim], targets2[:args.dlim])
     
-    if args.d2ae:
-        model = TDAE_D2AE_v2(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels)
-    else:
-        model = TDAE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels)
+    model = TDAE_D2AE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels)
 
     if args.retrain:
         model.load_state_dict(torch.load('{}/param/TDAE_test_param.json'.format(out_source_dpath)))
@@ -1300,7 +1292,7 @@ def train_TDAE():
     else:
         srcs, targets1, targets2 = get_triplet_flatted_data(data_path)
     
-    model = TDAE_out(n_class1=torch.unique(targets1).size(0), n_class2=torch.unique(targets2).size(0), d2ae_flag = d2ae_flag, img_h=img_h, img_w=img_w)
+    model = TDAE_D2AE(n_class1=torch.unique(targets1).size(0), n_class2=torch.unique(targets2).size(0), d2ae_flag = d2ae_flag, img_h=img_h, img_w=img_w)
     if args.dlim > 0:
         data_pairs = torch.utils.data.TensorDataset(srcs[0][:args.dlim], srcs[1][:args.dlim], srcs[2][:args.dlim], targets1[:args.dlim], targets2[:args.dlim])
     else:
@@ -1605,11 +1597,7 @@ def val_TDAE(zero_padding=False):
         srcs, targets1, targets2 = get_flatted_data(data_path)
     data_pairs = torch.utils.data.TensorDataset(srcs, targets1, targets2)
 
-    if args.d2ae:
-        model = TDAE_D2AE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels)
-    else:
-        model = TDAE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels)
-    # model = TDAE_out(n_class1=torch.unique(targets1).size(0), n_class2=torch.unique(targets2).size(0), d2ae_flag = d2ae_flag, img_h=img_h, img_w=img_w)
+    model = TDAE_D2AE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels)
     if args.param == 'best':
         model.load_state_dict(torch.load('{}/TDAE_test_bestparam.json'.format(out_param_dpath)))
     else:
@@ -1881,11 +1869,8 @@ def test_TDAE():
         srcs, targets1, targets2 = get_flatted_data(data_path)
     data_pairs = torch.utils.data.TensorDataset(srcs, targets1, targets2)
     
-    # model = TDAE_out(n_class1=torch.unique(targets1).size(0), n_class2=5, d2ae_flag = d2ae_flag, img_h=img_h, img_w=img_w)
-    if args.d2ae:
-        model = TDAE_D2AE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels)
-    else:
-        model = TDAE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels)
+    model = TDAE_D2AE(n_classes=[torch.unique(targets1).size(0), torch.unique(targets2).size(0)], img_h=img_h, img_w=img_w, n_decov=args.ndeconv, channels=args.channels)
+
     if args.param == 'best':
         model.load_state_dict(torch.load('{}/TDAE_test_bestparam.json'.format(out_param_dpath)))
     else:

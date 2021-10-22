@@ -121,6 +121,8 @@ def get_triplet_flatted_data_with_idx(data_dpath, label_decomp=True):
     src = []
     idx, p_idx, n_idx = [], [], []
     target1, target2 = [], []
+    id_list = []
+    path_list = []
     inc = 0
     with h5py.File(data_dpath, 'r') as f:
         for group_key in f.keys():
@@ -141,6 +143,8 @@ def get_triplet_flatted_data_with_idx(data_dpath, label_decomp=True):
                         n_inc = inc - 2
                     else:
                         continue
+                    id_list.append(child_group.split('/')[1])
+                    path_list.append(child_group)
                     src.append(f[child_group][()])
                     idx.append(inc)
                     p_idx.append(p_inc)
@@ -167,18 +171,107 @@ def get_triplet_flatted_data_with_idx(data_dpath, label_decomp=True):
     idx = torch.from_numpy(idx).long()
     p_idx = torch.from_numpy(p_idx).long()
     n_idx = torch.from_numpy(n_idx).long()
-    return src, target1, target2, (idx, p_idx, n_idx)
+    return src, target1, target2, (idx, p_idx, n_idx), id_list, path_list
 
 
-def random_label_replace(src, ratio=0.1, value=-1, seed=1):
+def get_sequence_splitted_data_with_const(data_dpath, label_decomp=True):
+    src = []
+    target1, target2 = [], []
+    const = []
+    id_dict = {}
+    path_list = []
+    ind = 0
+    with h5py.File(data_dpath, 'r') as f:
+        for group_key in f.keys():
+            for group_id, parent_key in enumerate(f[group_key].keys()):
+                id_dict[group_id] = []
+                parent_group = '{}/{}'.format(group_key, parent_key)
+                child_key_list = list(f[parent_group].keys())
+                for i, child_key in enumerate(child_key_list):
+                    id_dict[group_id].append(ind)
+                    child_group = '{}/{}'.format(parent_group, child_key)
+                    path_list.append(child_group)
+                    src.append(f[child_group][()])
+                    target1.append(f[child_group].attrs['part'])
+                    target2.append(f[child_group].attrs['mayo'])
+                    ind += 1
+
+    if 'colon' in data_dpath:
+        if label_decomp:
+            target2 = [1 if cat_target2 > 1 else 0 for cat_target2 in target2]
+    src = np.asarray(src)
+    if src.max() > 1:
+        src = src / 255
+    src = np.transpose(src, (0, 3, 1, 2))
+    target1 = np.asarray(target1)
+    target2 = np.asarray(target2)
+    src = torch.from_numpy(src).float()
+    target1 = torch.from_numpy(target1).long()
+    target2 = torch.from_numpy(target2).long()
+
+    return src, target1, target2, id_dict, path_list
+
+
+def random_label_replace(src, ratio=0.1, value=-2, seed=1, fix_indices=None):
     torch.manual_seed(seed)
     rn.seed(seed)
     np.random.seed(seed)
-    
     dst = copy.deepcopy(src[:])
+
     for uniq_src in np.unique(src):
         idx = np.where(src==uniq_src)[0]
-        pick_idx = np.random.choice(idx, size=int(len(idx)*ratio))
+        idx = idx[fix_indices[idx] == 1]
+        shuffled_idx = list(range(len(idx)))
+        rn.shuffle(shuffled_idx)
+        pick_idx = idx[shuffled_idx[:int(len(idx)*ratio)]]
         dst[pick_idx] = value
-        
     return dst
+
+
+def images2hdf5_walk(input_path, out_fpath, g_name='img', labels=[], discard_word=None, specific_word=None):
+    with h5py.File(out_fpath, 'w') as f:
+        f.create_group(g_name)
+        for pathname, dirnames, filenames in os.walk(input_path):
+            for i, filename in enumerate(sorted(filenames)):
+                if filename.endswith('.jpg'):
+                    fpath = os.path.join(pathname, filename)
+                    if not(discard_word is None):
+                        break_flag = False
+                        for w in discard_word:
+                            if w in fpath:
+                                break_flag = True
+                        if break_flag: break
+
+                    if specific_word is None:
+                        print(pathname)
+                        src = io.imread(fpath)
+                        src = src.astype(np.uint8)
+                        if src.shape[1] / src.shape[0] >= 1.2:
+                            src = src[:, -src.shape[0]:]
+                        if np.shape(src)[:2] != (224, 224):
+                            src = Image.fromarray(src)
+                            # src = np.asarray(src.resize((224,224)))
+                            src = cv2.resize(np.float32(src), (224, 224), interpolation=cv2.INTER_AREA)
+                        src = np.array(src)
+                        f[g_name].create_dataset(name=fpath, data=src)
+                        f[g_name][fpath].attrs['path'] = fpath
+                    else:
+                        continue_flag = False
+                        for w in specific_word:
+                            if w in pathname:
+                                continue_flag = True
+                        if continue_flag:
+                            print(pathname)
+                            src = io.imread(fpath)
+                            src = src.astype(np.uint8)
+                            if src.shape[1] / src.shape[0] >= 1.2:
+                                src = src[:, -src.shape[0]:]
+                            if np.shape(src)[:2] != (224, 224):
+                                src = Image.fromarray(src)
+                                # src = np.asarray(src.resize((224,224)))
+                                src = cv2.resize(np.float32(src), (224, 224), interpolation=cv2.INTER_AREA)
+                            src = np.array(src)
+                            f[g_name].create_dataset(name=fpath, data=src)
+                            f[g_name][fpath].attrs['path'] = fpath
+
+

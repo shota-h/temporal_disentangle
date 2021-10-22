@@ -60,27 +60,56 @@ class TripletLoss(nn.Module):
     Triplet loss
     Takes embeddings of an anchor sample, a positive sample and a negative sample
     """
-
-    def __init__(self, margin=0):
+    def __init__(self, margin=0, semi=False):
         super(TripletLoss, self).__init__()
         self.margin = margin
+        self.semi = semi
 
     def forward(self, anchor, positive, negative, size_average=True, ignore_index=[]):
         distance_positive = (anchor - positive).pow(2).sum(1)  # .pow(.5)
         distance_negative = (anchor - negative).pow(2).sum(1)  # .pow(.5)
-        losses = F.relu(distance_positive - distance_negative + self.margin)
+        if self.semi:
+            indices = ((distance_positive <= distance_negative)* (distance_positive < (distance_positive + self.margin))).nonzero()[:, 0]
+            losses = F.relu(distance_positive[indices] - distance_negative[indices] + self.margin)
+        else:
+            losses = F.relu(distance_positive - distance_negative + self.margin)
         return losses.mean() if size_average else losses.sum()
 
 
-def negative_entropy_loss(input, small_value=1e-4):
-    softmax_input = F.softmax(input, dim=1) + small_value
+class MetricLoss(nn.Module):
+    """
+    Triplet loss
+    Takes embeddings of an anchor sample, a positive sample and a negative sample
+    """
+
+    def __init__(self, margin=0):
+        super(MetricLoss, self).__init__()
+        self.margin = margin
+
+    def forward(self, anchor, positive, size_average=True, ignore_index=[]):
+        distance = (anchor - positive).pow(2).sum(1)  # .pow(.5)
+        losses = F.relu(distance - self.margin)
+        return losses.mean() if size_average else losses.sum()
+
+
+def negative_entropy_loss(inputs, small_value=1e-4):
+    softmax_input = F.softmax(inputs + small_value, dim=1)
     # w = torch.ones((softmax_input.size(0), softmax_input.size(1))) / softmax_input.size(1)
     # w = w.to(device)
     log_input = torch.log(softmax_input)
     # weight_log_input = w * log_input
     # weight_log_input = torch.mul(w, log_input)
-    neg_entropy = torch.sum(-log_input, dim=1) / log_input.size()[1]
+    neg_entropy = torch.sum(-log_input, dim=1) / log_input.size(1)
     return torch.mean(neg_entropy)
+
+
+def cross_entropy_with_soft_label(preds, labels, eps=1e-8):
+    assert simplex.check(preds) and simplex.check(labels), \
+        "input {} and target {} should be a simplex".format(input, target)
+    softmax_input = F.softmax(preds + eps, dim=1)
+    softmax_input = torch.clamp(softmax_input, eps, 1 - eps)
+    log_input = torch.log(softmax_input)
+    return torch.mean(torch.sum(-labels* log_input, dim=1))
 
 
 def make_index_rankingloss(target):
@@ -109,3 +138,10 @@ def loss_vae(recon_x, x, mu1, mu2, logvar1, logvar2):
     KLD1 = torch.mean(-0.5 * torch.sum(1 + logvar1 - mu1.pow(2) - logvar1.exp(), dim=-1))
     KLD2 = torch.mean(-0.5 * torch.sum(1 + logvar2 - mu2.pow(2) - logvar2.exp(), dim=-1))
     return BCE + KLD1 + KLD2
+
+if __name__ == '__main__':
+    a = torch.normal(2, 3, size=(10, 1))
+    b = torch.normal(2, 3, size=(10, 1)) + 2
+    c = torch.normal(2, 3, size=(10, 1)) + 1
+    T = TripletLoss(margin=1.0)
+    print(T(a,b,c))

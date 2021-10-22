@@ -1,0 +1,6 @@
+python3 src/temporal_vae.py --semi --ratio 0.0 --classifier 1 --adv 1 --triplet --batch 32 --tri 0.1 --epoch 300 --ex metric_c1_a1_t01_r00 --data $1 --mode $2 --single_triplet --use_pseudo --step 1
+python3 src/temporal_vae.py --semi --ratio 0.2 --classifier 1 --adv 1 --triplet --batch 32 --tri 0.1 --epoch 300 --ex metric_c1_a1_t01_r02 --data $1 --mode $2 --single_triplet --use_pseudo --step 1
+python3 src/temporal_vae.py --semi --ratio 0.4 --classifier 1 --adv 1 --triplet --batch 32 --tri 0.1 --epoch 300 --ex metric_c1_a1_t01_r04 --data $1 --mode $2 --single_triplet --use_pseudo --step 1
+python3 src/temporal_vae.py --semi --ratio 0.6 --classifier 1 --adv 1 --triplet --batch 32 --tri 0.1 --epoch 300 --ex metric_c1_a1_t01_r06 --data $1 --mode $2 --single_triplet --use_pseudo --step 1
+python3 src/temporal_vae.py --semi --ratio 0.8 --classifier 1 --adv 1 --triplet --batch 32 --tri 0.1 --epoch 300 --ex metric_c1_a1_t01_r08 --data $1 --mode $2 --single_triplet --use_pseudo --step 1
+python3 src/temporal_vae.py --semi --ratio 1.0 --classifier 1 --adv 1 --triplet --batch 32 --tri 0.1 --epoch 300 --ex metric_c1_a1_t01_r10 --data $1 --mode $2 --single_triplet --use_pseudo --step 1
